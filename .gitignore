@@ -1,0 +1,24 @@
+# Salesforce
+.sf/
+.sfdx/
+.localdevserver/
+.vscode/
+
+# Node & dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & local secrets
+.env
+.env.local
+
+# Cloudflare Tunnel temporary files
+cloudflared.exe
+.cloudflared/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store

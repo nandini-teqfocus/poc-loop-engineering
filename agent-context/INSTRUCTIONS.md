@@ -1,0 +1,80 @@
+# Agent Standing Rules of Engagement
+
+These instructions govern the behavior of all autonomous agents running within this project. Adherence is mandatory.
+
+---
+
+## 1. Agent 1: Planner Protocol
+
+### Step 1: Ingest Context
+Before inspecting or processing the assigned ticket, Agent 1 **must** read:
+1. `agent-context/PROJECT.md`
+2. `agent-context/INSTRUCTIONS.md`
+3. `agent-context/MEMORY.md`
+
+### Step 2: Formulate the Plan
+Agent 1 reads the assigned JIRA ticket (via JIRA MCP or orchestrator input). It must write the execution plan to:
+`agent-context/tickets/<TICKET-KEY>/plan.md`
+
+#### Required `plan.md` Structure:
+```markdown
+# Plan: <TICKET-KEY> - <Title>
+
+## 1. Context & Dependencies
+- Which existing fields/components in MEMORY.md does this build upon?
+- Any pre-conditions or dependencies?
+
+## 2. Technical Specification
+- Exact metadata files to create/modify (file paths, API names, data types, picklist values).
+- Validation rule formulas, error conditions, and error messages.
+
+## 3. Deployment & Verification Steps
+- Salesforce CLI command(s) to deploy and test.
+- Verification checks to confirm correct installation in the target org.
+
+## 4. Persistent Memory Updates Required
+- Exact text snippet to add/update in `agent-context/MEMORY.md`.
+- Exact entry to append to `agent-context/CHANGELOG.md`.
+```
+
+### Step 3: Human Clarification Protocol (`NEEDS_INPUT`)
+If the ticket requirements are ambiguous, contradictory, or missing critical specifications (e.g. unspecified picklist values, ambiguous validation rules), Agent 1 **must not guess**.
+- Output the question on the very last line in the exact format:
+  ```
+  NEEDS_INPUT: <Specific question for the developer>
+  ```
+- Exit immediately. The orchestrator will post this question to the Slack thread and resume Agent 1 via `agy --continue` once the developer responds.
+
+---
+
+## 2. Agent 2: Builder Protocol
+
+### Step 1: Read Plan
+Agent 2 receives and reads `agent-context/tickets/<TICKET-KEY>/plan.md`.
+
+### Step 2: Implement Code & Metadata
+- Generate the required Salesforce metadata files under `force-app/main/default/`.
+- Verify files conform to standards defined in `PROJECT.md`.
+
+### Step 3: Deploy & Verify
+- Deploy metadata to the target org using:
+  ```bash
+  sf project deploy start --target-org time-sheet
+  ```
+- If the deployment fails, diagnose the compilation or validation error, fix the metadata, and retry until successful.
+
+### Step 4: Update Persistent Project Memory (MANDATORY)
+In the same working branch, Agent 2 **must**:
+1. Update `agent-context/MEMORY.md`: Update or add the relevant section describing the new fields, validation rules, or components and the business reason for each.
+2. Append a new record to `agent-context/CHANGELOG.md` with date, ticket key, summary, artifacts touched, and PR link.
+
+### Step 5: Commit & Open Pull Request
+- Ensure working on branch `portal/<TICKET-KEY>`.
+- Commit all changes together (code/metadata + `agent-context/MEMORY.md` + `agent-context/CHANGELOG.md` + `agent-context/tickets/<TICKET-KEY>/`):
+  ```bash
+  git add .
+  git commit -m "feat(<TICKET-KEY>): <short summary>"
+  git push origin portal/<TICKET-KEY>
+  gh pr create --title "<TICKET-KEY>: <short summary>" --body "<summary>" --base main
+  ```
+- Emit the final PR URL upon completion.
