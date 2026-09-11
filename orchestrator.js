@@ -42,6 +42,15 @@ export async function executeLoopForTicket(ticketKey) {
 
 
     console.log(`[ORCHESTRATOR] Ticket Title: ${summary}`);
+    const currentStatus = issue.fields?.status?.name?.toLowerCase();
+    console.log(`[ORCHESTRATOR] Current Status: ${issue.fields?.status?.name}`);
+
+    // Ensure ticket is in 'In Progress' state before proceeding
+    if (currentStatus === 'to do' || currentStatus === 'todo') {
+      console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to 'In Progress'...`);
+      await transitionJiraIssue(ticketKey, ['In Progress']);
+    }
+
 
     // 2. Announce in Slack
     if (CHANNEL_ID) {

@@ -12,16 +12,18 @@ export function runAgent(prompt, isContinue = false, timeoutMinutes = 15) {
       args.push('--continue');
     }
 
-    args.push('--print', prompt);
-
     console.log(`\n================== [AGENT INVOCATION (${isContinue ? 'CONTINUE' : 'START'})] ==================`);
-    console.log(`Command: ${agyBin} ${args.slice(0, -1).join(' ')} "<prompt length: ${prompt.length} chars>"`);
+    console.log(`Spawning ${agyBin} with stdin prompt length: ${prompt.length} chars`);
 
     const child = spawn(agyBin, args, {
-      shell: true,
+      shell: false,
       cwd: process.cwd(),
       env: { ...process.env, CI: '1' }
     });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+
 
     let fullOutput = '';
     let fullStderr = '';
