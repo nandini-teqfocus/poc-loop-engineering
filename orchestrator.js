@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { getJiraIssue, addJiraComment, transitionJiraIssue } from './src/jira.js';
+import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf } from './src/jira.js';
 import { initSlack, postSlackMessage, askSlackQuestion } from './src/slack.js';
 import { runAgent, parseNeedsInput } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt } from './src/prompts.js';
@@ -38,9 +38,8 @@ export async function executeLoopForTicket(ticketKey) {
     console.log(`[ORCHESTRATOR] Fetching details from JIRA for ${ticketKey}...`);
     const issue = await getJiraIssue(ticketKey);
     const summary = issue.fields?.summary || 'No summary';
-    const description = typeof issue.fields?.description === 'string'
-      ? issue.fields.description
-      : JSON.stringify(issue.fields?.description || '');
+    const description = extractTextFromAdf(issue.fields?.description) || 'No description provided';
+
 
     console.log(`[ORCHESTRATOR] Ticket Title: ${summary}`);
 

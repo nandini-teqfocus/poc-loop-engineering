@@ -12,7 +12,29 @@ function getJiraConfig() {
   return { baseUrl, authHeader };
 }
 
+export function extractTextFromAdf(doc) {
+  if (!doc) return '';
+  if (typeof doc === 'string') return doc;
+  let text = '';
+  function walk(node) {
+    if (node.type === 'text' && node.text) {
+      text += node.text;
+    }
+    if (node.content && Array.isArray(node.content)) {
+      for (const child of node.content) {
+        walk(child);
+      }
+      if (node.type === 'paragraph' || node.type === 'listItem') {
+        text += '\n';
+      }
+    }
+  }
+  walk(doc);
+  return text.trim();
+}
+
 export async function getJiraIssue(issueKey) {
+
   const { baseUrl, authHeader } = getJiraConfig();
   const res = await fetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
     headers: {
