@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Allergies__c</fullName>
+    <description>Known allergies for the contact (e.g., Penicillin, Peanuts).</description>
+    <inlineHelpText>Specify any known allergies.</inlineHelpText>
+    <label>Allergies</label>
+    <length>32768</length>
+    <required>false</required>
+    <trackFeedHistory>false</trackFeedHistory>
+    <type>LongTextArea</type>
+    <visibleLines>3</visibleLines>
+</CustomField>
