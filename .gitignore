@@ -16,6 +16,8 @@ yarn-error.log*
 
 # Cloudflare Tunnel temporary files
 cloudflared.exe
+cloudflared*.log
+*.log
 .cloudflared/
 
 # OS files

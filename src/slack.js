@@ -13,7 +13,7 @@ export async function initSlack() {
     socketMode: true
   });
 
-  // Listen for thread replies
+  // Listen for thread replies via message events
   slackApp.message(async ({ message }) => {
     // Only care about messages with thread_ts, from non-bots
     if (message.thread_ts && !message.bot_id && !message.subtype) {
@@ -25,6 +25,19 @@ export async function initSlack() {
       }
     }
   });
+
+  // Listen for app_mention events (works even without channels:history)
+  slackApp.event('app_mention', async ({ event }) => {
+    const threadTs = event.thread_ts || event.ts;
+    console.log(`[SLACK] Received app_mention in thread ${threadTs}: "${event.text}"`);
+    const resolver = activeResolvers.get(threadTs);
+    if (resolver) {
+      console.log(`[SLACK] Resolving active question with mention text: "${event.text}"`);
+      activeResolvers.delete(threadTs);
+      resolver(event.text);
+    }
+  });
+
 
   await slackApp.start();
   console.log('[SLACK] Socket Mode client connected and listening.');
