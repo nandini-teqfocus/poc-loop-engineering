@@ -1,4 +1,4 @@
-﻿# Project Changelog
+# Project Changelog
 
 Append-only ledger of completed tickets. Each entry contains the ticket key, date, summary, artifacts touched, and PR link.
 
@@ -14,3 +14,12 @@ Append-only ledger of completed tickets. Each entry contains the ticket key, dat
     - `force-app/main/default/objects/Contact/fields/Emergency_Contact_Phone__c.field-meta.xml`
     - `force-app/main/default/objects/Contact/fields/Medical_Conditions__c.field-meta.xml`
   - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/3
+
+- **Ticket**: SCRUM-9
+  - **Date**: 2026-09-14
+  - **Summary**: Create custom fields on Contact object (Preferred_Language__c, Portal_Active__c) for language preference and portal access tracking.
+  - **Artifacts**:
+    - `force-app/main/default/objects/Contact/fields/Preferred_Language__c.field-meta.xml`
+    - `force-app/main/default/objects/Contact/fields/Portal_Active__c.field-meta.xml`
+  - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/5
+
