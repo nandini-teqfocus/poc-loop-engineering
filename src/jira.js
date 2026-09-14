@@ -12,6 +12,22 @@ function getJiraConfig() {
   return { baseUrl, authHeader };
 }
 
+/**
+ * Constructs the direct browser URL for a given JIRA issue
+ * @param {string} issueKey E.g. SCRUM-6
+ * @returns {string} E.g. https://snandini548.atlassian.net/browse/SCRUM-6
+ */
+export function getJiraTicketUrl(issueKey) {
+  try {
+    const rawUrl = process.env.JIRA_BASE_URL?.trim();
+    if (!rawUrl) return null;
+    const baseUrl = new URL(rawUrl).origin;
+    return `${baseUrl}/browse/${encodeURIComponent(issueKey)}`;
+  } catch (e) {
+    return null;
+  }
+}
+
 export function extractTextFromAdf(doc) {
   if (!doc) return '';
   if (typeof doc === 'string') return doc;
@@ -139,3 +155,92 @@ export async function transitionJiraIssue(issueKey, targetStatusNames) {
   console.log(`[JIRA] Transitioned ${issueKey} to '${matched.name}' (id: ${matched.id})`);
   return true;
 }
+
+export async function createJiraIssue({ projectKey = 'SCRUM', summary, description, issueTypeName = 'Task' }) {
+  const { baseUrl, authHeader } = getJiraConfig();
+
+  const content = [];
+  const paragraphs = description.split('\n\n');
+  for (const para of paragraphs) {
+    if (!para.trim()) continue;
+    content.push({
+      type: 'paragraph',
+      content: [
+        {
+          type: 'text',
+          text: para.trim()
+        }
+      ]
+    });
+  }
+
+  const payload = {
+    fields: {
+      project: { key: projectKey },
+      summary,
+      description: {
+        type: 'doc',
+        version: 1,
+        content: content.length > 0 ? content : [
+          {
+            type: 'paragraph',
+            content: [{ type: 'text', text: description || summary }]
+          }
+        ]
+      },
+      issuetype: { name: issueTypeName }
+    }
+  };
+
+  const res = await fetch(`${baseUrl}/rest/api/3/issue`, {
+    method: 'POST',
+    headers: {
+      'Authorization': authHeader,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to create JIRA issue: ${res.status} ${text}`);
+  }
+
+  const issueData = await res.json();
+
+  // If there is an active sprint on the board, move the issue into it so it appears on the active board
+  try {
+    const boardRes = await fetch(`${baseUrl}/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(projectKey)}`, {
+      headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+    });
+    if (boardRes.ok) {
+      const boardData = await boardRes.json();
+      const boardId = boardData.values?.[0]?.id;
+      if (boardId) {
+        const sprintRes = await fetch(`${baseUrl}/rest/agile/1.0/board/${boardId}/sprint?state=active`, {
+          headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+        });
+        if (sprintRes.ok) {
+          const sprintData = await sprintRes.json();
+          const activeSprintId = sprintData.values?.[0]?.id;
+          if (activeSprintId) {
+            await fetch(`${baseUrl}/rest/agile/1.0/sprint/${activeSprintId}/issue`, {
+              method: 'POST',
+              headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ issues: [issueData.key] })
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal if agile sprint assignment is unavailable
+  }
+
+  return issueData;
+}
+

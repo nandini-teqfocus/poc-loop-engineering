@@ -1,4 +1,4 @@
-﻿# Project Changelog
+# Project Changelog
 
 Append-only ledger of completed tickets. Each entry contains the ticket key, date, summary, artifacts touched, and PR link.
 
@@ -14,3 +14,12 @@ Append-only ledger of completed tickets. Each entry contains the ticket key, dat
     - `force-app/main/default/objects/Contact/fields/Emergency_Contact_Phone__c.field-meta.xml`
     - `force-app/main/default/objects/Contact/fields/Medical_Conditions__c.field-meta.xml`
   - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/3
+
+- **Ticket**: SCRUM-8
+  - **Date**: 2026-09-14
+  - **Summary**: Create 2 fields on Opportunity object (Insurance_Provider__c, Coverage_Status__c).
+  - **Artifacts**:
+    - `force-app/main/default/objects/Opportunity/fields/Insurance_Provider__c.field-meta.xml`
+    - `force-app/main/default/objects/Opportunity/fields/Coverage_Status__c.field-meta.xml`
+  - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/4
+

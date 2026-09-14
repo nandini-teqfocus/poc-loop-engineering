@@ -1,4 +1,4 @@
-﻿# Persistent Living Memory
+# Persistent Living Memory
 
 This document is the distilled, living summary of what exists in the target Salesforce org and why.
 Agent 1 reads this document FIRST before planning any new ticket.
@@ -16,3 +16,10 @@ Agent 1 reads this document FIRST before planning any new ticket.
   - `Emergency_Contact_Phone__c` (Phone) - Emergency contact direct phone.
   - `Medical_Conditions__c` (Long Text Area, 32768) - Chronic/relevant medical conditions.
 - Not yet done: Fields not yet exposed on Experience Cloud portal profile/community record pages.
+
+## Opportunity Object
+- Fields added in SCRUM-8:
+  - `Insurance_Provider__c` (Text, 255) - Name of insurance provider (e.g., Blue Cross).
+  - `Coverage_Status__c` (Picklist: Active, Expired, Pending) - Current status of insurance coverage.
+- Not yet done: Fields not yet exposed on Experience Cloud portal opportunity record pages or layouts.
+
