@@ -128,3 +128,81 @@ MANDATORY FIX PROTOCOL:
 `;
 }
 
+export function buildAgent4ReviewPrompt({ ticketKey, summary, description, prUrl, prNumber, branchName, iteration = 1 }) {
+  return `You are Agent 4 (PR Reviewer & Code Quality Specialist) for the Experience Cloud Portal project.
+
+Your task is to conduct a rigorous, automated Pull Request Review for JIRA ticket ${ticketKey} (Review Iteration ${iteration}).
+
+Pull Request URL: ${prUrl || 'Current branch PR'}
+Pull Request Number: ${prNumber || 'Current'}
+Feature Branch: ${branchName || `portal/${ticketKey}`}
+Ticket Summary: ${summary}
+Ticket Description:
+${description || '(Refer to agent-context/tickets/' + ticketKey + '/plan.md)'}
+
+MANDATORY REVIEW PROTOCOL:
+1. Read the persistent project context:
+   - agent-context/PROJECT.md
+   - agent-context/INSTRUCTIONS.md
+   - agent-context/MEMORY.md
+   - agent-context/tickets/${ticketKey}/plan.md
+2. Inspect the code changes introduced by this Pull Request:
+   - Run git diff to compare main with ${branchName || `portal/${ticketKey}`}:
+     git diff main...${branchName || `portal/${ticketKey}`}
+   - Review all modified or added files under force-app/main/default/.
+3. Verify all requirements and acceptance criteria:
+   - Check that all requested custom fields, validation rules, or components are implemented.
+   - Verify API names, camelCase/PascalCase labeling, __c suffixes, and picklist values.
+   - Confirm validation rule logic, formulas, error messages, and error locations match specs.
+   - Verify agent-context/MEMORY.md and agent-context/CHANGELOG.md were properly updated.
+4. Write a formal Pull Request Review Report to:
+   agent-context/tickets/${ticketKey}/pr-review.md
+   Include:
+   - Title: # PR Review Report: ${ticketKey} (Iteration ${iteration})
+   - PR Reference: ${prUrl || branchName}
+   - Checklist of Acceptance Criteria (each marked [PASS] or [FAIL])
+   - Code Quality & Metadata Standards Assessment
+   - Documentation & Living Memory Assessment
+   - Final Recommendation: REVIEW_RESULT: APPROVED or REVIEW_RESULT: CHANGES_REQUESTED
+   - If CHANGES_REQUESTED: A section "### Required Fixes" listing every specific issue.
+5. MANDATORY OUTPUT DIRECTIVES ON FINAL LINES:
+   If all requirements and acceptance criteria are satisfied:
+   REVIEW_RESULT: APPROVED
+   REVIEW_SUMMARY: <one sentence summarizing why the PR is approved>
+
+   If anything is missing, defective, or non-compliant:
+   REVIEW_RESULT: CHANGES_REQUESTED
+   REVIEW_COMMENTS: <concise, actionable list of specific fixes needed>
+`;
+}
+
+export function buildAgent2PrReviewFixPrompt({ ticketKey, summary, branchName, prNumber, reviewComments, iteration = 1 }) {
+  return `You are Agent 2 (Builder) for the Experience Cloud Portal project.
+
+The PR Review Agent (Agent 4) reviewed Pull Request for ${ticketKey} (PR #${prNumber || 'current'}) and requested changes during Review Iteration ${iteration}.
+Your task is to FIX all identified issues, verify deployment, and push updates to the PR branch.
+
+Ticket Summary: ${summary}
+Branch: ${branchName || `portal/${ticketKey}`}
+PR Number: ${prNumber || 'Current'}
+Target Salesforce Org: time-sheet
+
+REVIEW COMMENTS & REQUIRED FIXES FROM PR REVIEW AGENT:
+${reviewComments}
+
+MANDATORY FIX PROTOCOL:
+1. Review the required fixes and inspect the relevant files under force-app/main/default/.
+2. Correct the metadata, fields, validation rules, or code to resolve every reported issue.
+3. Deploy the updated metadata to the target org to verify no deployment errors:
+   sf project deploy start --target-org time-sheet
+4. Update agent-context/MEMORY.md and agent-context/CHANGELOG.md if applicable.
+5. Commit and push changes directly to ${branchName || `portal/${ticketKey}`}:
+   git add .
+   git commit -m "fix(${ticketKey}): address PR review comments (iteration ${iteration})"
+   git push origin ${branchName || `portal/${ticketKey}`}
+6. On the final line of your output, print:
+   FIX_COMPLETE: <brief summary of fixes pushed to PR>
+`;
+}
+
+

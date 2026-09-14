@@ -7,8 +7,8 @@ import { fileURLToPath } from 'url';
 
 import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl } from './src/jira.js';
 import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket } from './src/slack.js';
-import { runAgent, parseNeedsInput, parseTestResult } from './src/agentRunner.js';
-import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt } from './src/prompts.js';
+import { runAgent, parseNeedsInput, parseTestResult, parseReviewResult } from './src/agentRunner.js';
+import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt, buildAgent4ReviewPrompt, buildAgent2PrReviewFixPrompt } from './src/prompts.js';
 
 const app = express();
 app.use(express.json());
@@ -215,16 +215,27 @@ export async function executeLoopForTicket(ticketKey) {
         phaseName: 'Implementation & Salesforce Deployment (Agent 2)',
         status: 'Completed',
         summary: `Metadata created/updated, deployed successfully to \`time-sheet\` org, living memory (\`MEMORY.md\` & \`CHANGELOG.md\`) updated, changes committed and PR created (${prUrl || 'branch ' + branchName}).`,
-        nextPhase: 'Phase 5: JIRA & Finalization',
+        nextPhase: 'Phase 5: Automated PR Review (Agent 4)',
         jiraUrl,
         githubUrl: prUrl
       });
 
-      // Phase 5: JIRA & Finalization
-      currentPhase = { number: 5, name: 'JIRA & Finalization' };
+      // Phase 5: Automated PR Review (Agent 4)
+      currentPhase = { number: 5, name: 'Automated PR Review (Agent 4)' };
+      await runPrReviewWorkflow({
+        ticketKey,
+        summary,
+        description,
+        prUrl,
+        branchName,
+        threadTs
+      });
+
+      // Phase 6: JIRA Finalization & Transition to In Review
+      currentPhase = { number: 6, name: 'JIRA Finalization' };
       const jiraComment = prUrl
-        ? `Automated delivery completed by Agent Loop.\n\nPull Request: ${prUrl}\n\nBranch: ${branchName}`
-        : `Automated delivery completed by Agent Loop for branch ${branchName}.`;
+        ? `Automated delivery completed and PR approved by Review Agent.\n\nPull Request: ${prUrl}\n\nBranch: ${branchName}`
+        : `Automated delivery completed for branch ${branchName}.`;
 
       console.log(`[ORCHESTRATOR] Posting comment to JIRA ${ticketKey}...`);
       try {
@@ -233,14 +244,14 @@ export async function executeLoopForTicket(ticketKey) {
         console.error('[ORCHESTRATOR] Failed to add JIRA comment:', e.message);
       }
 
-      console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to In Review / Code Review...`);
+      console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to In Review...`);
       try {
         await transitionJiraIssue(ticketKey, ['In Review', 'Code Review']);
         await notifyStageChange(CHANNEL_ID, {
           ticketKey,
           fromStage: 'In Progress',
           toStage: 'In Review',
-          summary: `Autonomous delivery loop completed. Work submitted for code review via PR: ${prUrl || branchName}`,
+          summary: `PR reviewed and approved. Work submitted for QA validation via PR: ${prUrl || branchName}`,
           jiraUrl,
           githubUrl: prUrl,
           threadTs
@@ -250,17 +261,17 @@ export async function executeLoopForTicket(ticketKey) {
       }
 
       await notifyPhase(CHANNEL_ID, threadTs, {
-        phaseNumber: 5,
-        phaseName: 'JIRA & Finalization',
+        phaseNumber: 6,
+        phaseName: 'JIRA Finalization',
         status: 'Completed',
-        summary: `Posted completion comment with PR reference to JIRA ${ticketKey} and transitioned issue status to *In Review*.`,
-        nextPhase: 'Phase 6: QA Validation & Acceptance Testing (Agent 3)',
+        summary: `PR approved. Transitioned issue status to *In Review* for QA testing.`,
+        nextPhase: 'Phase 7: QA Validation & Acceptance Testing (Agent 3)',
         jiraUrl,
         githubUrl: prUrl
       });
 
-      // Phase 6: QA Validation & Acceptance Testing (Agent 3)
-      currentPhase = { number: 6, name: 'QA Validation & Acceptance Testing (Agent 3)' };
+      // Phase 7: QA Validation & Acceptance Testing (Agent 3)
+      currentPhase = { number: 7, name: 'QA Validation & Acceptance Testing (Agent 3)' };
       await runTesterWorkflow({
         ticketKey,
         summary,
@@ -269,7 +280,7 @@ export async function executeLoopForTicket(ticketKey) {
         threadTs
       });
 
-      console.log(`\n[ORCHESTRATOR] Ticket ${ticketKey} successfully delivered and verified end-to-end!\n`);
+      console.log(`\n[ORCHESTRATOR] Ticket ${ticketKey} successfully delivered, reviewed, and tested end-to-end!\n`);
 
     } catch (phaseErr) {
       // Send clear failure update for the specific failed phase
@@ -296,6 +307,291 @@ export async function executeLoopForTicket(ticketKey) {
         `❌ *Error during delivery for ${ticketKey}:* ${err.message}`,
         threadTs,
         { jiraUrl }
+      );
+    }
+  } finally {
+    isProcessing = false;
+  }
+}
+
+/**
+ * Helper to submit PR review on GitHub via gh CLI
+ * Falls back to review comment if authenticated user is the PR author
+ */
+export function submitPrReview(prIdentifier, { action = 'COMMENT', body }) {
+  const tmpFile = path.join(process.cwd(), 'agent-context', `review-${Date.now()}.md`);
+  try {
+    fs.writeFileSync(tmpFile, body, 'utf8');
+
+    if (action === 'APPROVE') {
+      try {
+        execSync(`gh pr review ${prIdentifier} --approve -F "${tmpFile}"`, { stdio: 'pipe' });
+        console.log(`[GITHUB] Successfully approved PR #${prIdentifier} on GitHub.`);
+      } catch (err) {
+        console.warn(`[GITHUB] gh pr review --approve returned note: author cannot approve own PR. Submitting approval comment...`);
+        const approvalComment = `## ✅ PR Review: APPROVED\n\n${body}`;
+        fs.writeFileSync(tmpFile, approvalComment, 'utf8');
+        execSync(`gh pr review ${prIdentifier} --comment -F "${tmpFile}"`, { stdio: 'pipe' });
+      }
+    } else if (action === 'REQUEST_CHANGES') {
+      try {
+        execSync(`gh pr review ${prIdentifier} --request-changes -F "${tmpFile}"`, { stdio: 'pipe' });
+        console.log(`[GITHUB] Successfully requested changes on PR #${prIdentifier}.`);
+      } catch (err) {
+        console.warn(`[GITHUB] gh pr review --request-changes returned note: author cannot request changes on own PR. Submitting changes comment...`);
+        const changesComment = `## ⚠️ PR Review: CHANGES REQUESTED\n\n${body}`;
+        fs.writeFileSync(tmpFile, changesComment, 'utf8');
+        execSync(`gh pr review ${prIdentifier} --comment -F "${tmpFile}"`, { stdio: 'pipe' });
+      }
+    } else {
+      execSync(`gh pr review ${prIdentifier} --comment -F "${tmpFile}"`, { stdio: 'pipe' });
+      console.log(`[GITHUB] Added review comment to PR #${prIdentifier}.`);
+    }
+  } catch (e) {
+    console.error(`[GITHUB] Failed to submit review to PR #${prIdentifier}:`, e.message);
+  } finally {
+    if (fs.existsSync(tmpFile)) {
+      try { fs.unlinkSync(tmpFile); } catch (e) {}
+    }
+  }
+}
+
+/**
+ * Executes the PR Review Workflow (Agent 4):
+ * - Fetches linked JIRA ticket requirements & acceptance criteria
+ * - Reviews GitHub PR diff and code changes
+ * - If missing items found:
+ *   - Adds comment on GitHub PR explaining what needs to be fixed
+ *   - Sends review failure update to Slack thread
+ *   - Spawns Agent 2 (Builder in Fix Mode) to fix the issues, commit & push to PR
+ *   - Re-reviews until passes
+ * - If everything covered:
+ *   - Approves the PR on GitHub
+ *   - Sends review approval update to Slack thread
+ * - Only allows the ticket to proceed once the PR review passes!
+ */
+export async function runPrReviewWorkflow({ ticketKey, summary, description, prUrl, branchName, threadTs }) {
+  const jiraUrl = getJiraTicketUrl(ticketKey);
+  const effectivePrUrl = prUrl || getPrUrlForTicket(ticketKey);
+  const effectiveBranch = branchName || `portal/${ticketKey}`;
+
+  // Resolve PR number
+  let prNumber = null;
+  const prNumMatch = effectivePrUrl?.match(/\/pull\/(\d+)/);
+  if (prNumMatch) prNumber = prNumMatch[1];
+  if (!prNumber) {
+    try {
+      const ghOut = execSync(`gh pr view ${effectiveBranch} --json number -q ".number"`, { encoding: 'utf8' }).trim();
+      if (ghOut) prNumber = ghOut;
+    } catch (e) {}
+  }
+
+  console.log(`\n======================================================`);
+  console.log(`[ORCHESTRATOR] Starting PR Review Workflow for ${ticketKey}`);
+  console.log(`PR: ${effectivePrUrl || effectiveBranch} (PR #${prNumber || 'N/A'})`);
+  console.log(`======================================================\n`);
+
+  const MAX_REVIEW_ITERATIONS = 3;
+  let iteration = 0;
+  let reviewPassed = false;
+
+  while (!reviewPassed && iteration < MAX_REVIEW_ITERATIONS) {
+    iteration++;
+    console.log(`\n[ORCHESTRATOR] Running PR Review Iteration ${iteration} for ${ticketKey}...`);
+
+    // 1. Notify Slack: PR Review Started
+    if (CHANNEL_ID && threadTs) {
+      await notifyPhase(CHANNEL_ID, threadTs, {
+        phaseNumber: 5,
+        phaseName: `PR Review & Code Quality (Iteration ${iteration})`,
+        status: 'Started',
+        summary: `Agent 4 (PR Reviewer) is inspecting code diff, verifying acceptance criteria against JIRA ${ticketKey}...`,
+        nextPhase: null,
+        jiraUrl,
+        githubUrl: effectivePrUrl,
+        allowDuplicate: true
+      });
+    }
+
+    // 2. Spawn Agent 4 (PR Reviewer)
+    const reviewPrompt = buildAgent4ReviewPrompt({
+      ticketKey,
+      summary,
+      description,
+      prUrl: effectivePrUrl,
+      prNumber,
+      branchName: effectiveBranch,
+      iteration
+    });
+
+    const reviewResult = await runAgent(reviewPrompt, false);
+    const outcome = parseReviewResult(reviewResult.output, ticketKey);
+    console.log(`[ORCHESTRATOR] PR Review Iteration ${iteration} verdict: ${outcome.approved ? 'APPROVED' : 'CHANGES_REQUESTED'}`);
+
+    if (outcome.approved) {
+      reviewPassed = true;
+
+      // 3. Approve the PR on GitHub
+      console.log(`[ORCHESTRATOR] Submitting approval on GitHub PR #${prNumber}...`);
+      if (prNumber) {
+        submitPrReview(prNumber, {
+          action: 'APPROVE',
+          body: `All acceptance criteria and technical requirements for **${ticketKey}** verified successfully.\n\n### Review Summary\n${outcome.summary}`
+        });
+      }
+
+      // 4. Send review approval to Slack thread
+      if (CHANNEL_ID && threadTs) {
+        await notifyPhase(CHANNEL_ID, threadTs, {
+          phaseNumber: 5,
+          phaseName: 'PR Review & Code Quality (Agent 4)',
+          status: 'Completed',
+          summary: `Pull Request verified and approved. All requirements and acceptance criteria for *${ticketKey}* are satisfied. Review audit: \`agent-context/tickets/${ticketKey}/pr-review.md\`.`,
+          nextPhase: 'Phase 6: JIRA Finalization & QA Testing',
+          jiraUrl,
+          githubUrl: effectivePrUrl,
+          allowDuplicate: true
+        });
+
+        await postSlackMessage(
+          CHANNEL_ID,
+          `✅ *GitHub PR #${prNumber || 'Current'} Approved by Review Agent!*
+• *Ticket:* *${ticketKey}*
+• *Verdict:* Approved
+• *Summary:* ${outcome.summary}
+• *Next Step:* Proceeding to JIRA Finalization & QA Testing...`,
+          threadTs,
+          { jiraUrl, githubUrl: effectivePrUrl }
+        );
+      }
+
+      break;
+
+    } else {
+      // Reviewer found missing requirements or bugs!
+      console.log(`[ORCHESTRATOR] PR Reviewer requested changes: ${outcome.reviewComments}`);
+
+      // 1. Add clear comment on GitHub PR explaining what needs to be fixed
+      if (prNumber) {
+        console.log(`[ORCHESTRATOR] Adding review comment to GitHub PR #${prNumber}...`);
+        submitPrReview(prNumber, {
+          action: 'REQUEST_CHANGES',
+          body: `The PR Review Agent reviewed this PR against JIRA ticket **${ticketKey}**.\n\n### Required Fixes:\n${outcome.reviewComments}\n\n*Action:* Builder agent is automatically addressing these items.`
+        });
+      }
+
+      // 2. Send review result to Slack thread
+      if (CHANNEL_ID && threadTs) {
+        await notifyPhase(CHANNEL_ID, threadTs, {
+          phaseNumber: 5,
+          phaseName: `PR Review & Code Quality (Iteration ${iteration})`,
+          status: 'Failed',
+          summary: `PR Review found missing criteria or issues: ${outcome.reviewComments}`,
+          nextPhase: null,
+          jiraUrl,
+          githubUrl: effectivePrUrl,
+          allowDuplicate: true
+        });
+
+        await postSlackMessage(
+          CHANNEL_ID,
+          `🔍 *PR Review Changes Requested for ${ticketKey} (PR #${prNumber || 'Current'})*
+• *Issues to Fix:*
+>${outcome.reviewComments.replace(/\n/g, '\n>')}
+• *Action:* Spawning Agent 2 (Builder) to resolve review comments and update PR...`,
+          threadTs,
+          { jiraUrl, githubUrl: effectivePrUrl }
+        );
+      }
+
+      // 3. Spawn Agent 2 (Builder) to fix the issues and update PR
+      console.log(`[ORCHESTRATOR] Spawning Agent 2 (Builder) to address PR review comments...`);
+      const fixPrompt = buildAgent2PrReviewFixPrompt({
+        ticketKey,
+        summary,
+        branchName: effectiveBranch,
+        prNumber,
+        reviewComments: outcome.reviewComments,
+        iteration
+      });
+
+      const fixResult = await runAgent(fixPrompt, false);
+      if (fixResult.code !== 0) {
+        throw new Error(`Agent 2 PR fix process exited with code ${fixResult.code}`);
+      }
+
+      // 4. Notify Slack of PR update
+      if (CHANNEL_ID && threadTs) {
+        await postSlackMessage(
+          CHANNEL_ID,
+          `🔧 *PR Updated with Fixes for ${ticketKey} (Iteration ${iteration})*
+• Builder addressed review comments, redeployed to \`time-sheet\` org, and pushed commits to PR #${prNumber}.
+• Re-invoking PR Review Agent to verify fixes...`,
+          threadTs,
+          { jiraUrl, githubUrl: effectivePrUrl }
+        );
+      }
+
+      // Loop continues to next iteration for re-review!
+    }
+  }
+
+  // Only allow the ticket to proceed once the PR review passes!
+  if (!reviewPassed) {
+    throw new Error(`Execution halted: PR review did not pass after ${MAX_REVIEW_ITERATIONS} iterations for ${ticketKey}.`);
+  }
+
+  return { success: true, prNumber, effectivePrUrl };
+}
+
+/**
+ * Standalone PR Review Runner
+ */
+export async function runPrReviewForTicket(ticketKey) {
+  if (isProcessing) {
+    console.warn(`[ORCHESTRATOR] Already processing a task. Skipping review trigger for ${ticketKey}`);
+    return;
+  }
+
+  isProcessing = true;
+  console.log(`\n[ORCHESTRATOR] Standalone PR review trigger for ${ticketKey}`);
+
+  try {
+    const issue = await getJiraIssue(ticketKey);
+    const summary = issue.fields?.summary || 'No summary';
+    const description = extractTextFromAdf(issue.fields?.description) || '';
+    const jiraUrl = getJiraTicketUrl(ticketKey);
+    const branchName = `portal/${ticketKey}`;
+    const prUrl = getPrUrlForTicket(ticketKey);
+
+    let threadTs = getTicketThread(ticketKey);
+    if (!threadTs && CHANNEL_ID) {
+      threadTs = await postSlackMessage(
+        CHANNEL_ID,
+        `🔍 *PR Review Triggered*: Inspecting pull request for *${ticketKey}*\n*Summary:* ${summary}`,
+        null,
+        { jiraUrl, githubUrl: prUrl }
+      );
+      registerTicketThread(ticketKey, threadTs);
+    }
+
+    await runPrReviewWorkflow({
+      ticketKey,
+      summary,
+      description,
+      branchName,
+      prUrl,
+      threadTs
+    });
+  } catch (err) {
+    console.error(`[ORCHESTRATOR ERROR] Standalone PR review failed for ${ticketKey}:`, err);
+    if (CHANNEL_ID) {
+      const threadTs = getTicketThread(ticketKey);
+      await postSlackMessage(
+        CHANNEL_ID,
+        `❌ *Error during PR Review for ${ticketKey}:* ${err.message}`,
+        threadTs,
+        { jiraUrl: getJiraTicketUrl(ticketKey) }
       );
     }
   } finally {
@@ -822,6 +1118,12 @@ app.post('/trigger-tester/:key', (req, res) => {
   runTesterWorkflowForTicket(key);
 });
 
+app.post('/trigger-review/:key', (req, res) => {
+  const { key } = req.params;
+  res.send({ triggered: true, ticket: key, workflow: 'pr_review' });
+  runPrReviewForTicket(key);
+});
+
 app.post('/trigger-merge/:key', async (req, res) => {
   const { key } = req.params;
   const prUrl = req.body?.prUrl || getPrUrlForTicket(key);
@@ -840,6 +1142,7 @@ async function start() {
     console.log(`JIRA Webhook endpoint:   http://localhost:${PORT}/webhook/jira`);
     console.log(`GitHub Webhook endpoint: http://localhost:${PORT}/webhook/github`);
     console.log(`Manual trigger loop:     http://localhost:${PORT}/trigger/<TICKET-KEY>`);
+    console.log(`Manual trigger review:   http://localhost:${PORT}/trigger-review/<TICKET-KEY>`);
     console.log(`Manual trigger tester:   http://localhost:${PORT}/trigger-tester/<TICKET-KEY>`);
     console.log(`Manual trigger merge:    http://localhost:${PORT}/trigger-merge/<TICKET-KEY>`);
     console.log(`======================================================\n`);
@@ -850,6 +1153,12 @@ async function start() {
   if (ticketArgIdx !== -1 && process.argv[ticketArgIdx + 1]) {
     const ticketKey = process.argv[ticketArgIdx + 1];
     executeLoopForTicket(ticketKey);
+  }
+
+  const reviewArgIdx = process.argv.indexOf('--review');
+  if (reviewArgIdx !== -1 && process.argv[reviewArgIdx + 1]) {
+    const ticketKey = process.argv[reviewArgIdx + 1];
+    runPrReviewForTicket(ticketKey);
   }
 
   const testerArgIdx = process.argv.indexOf('--tester');

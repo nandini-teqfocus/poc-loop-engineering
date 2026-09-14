@@ -126,4 +126,37 @@ When a Pull Request associated with a ticket is merged into `main`:
 4. Posts the stage transition and a celebratory completion card with JIRA & GitHub action buttons into the existing Slack thread.
 5. Duplicate merge deliveries are debounced and suppressed using in-memory idempotency tracking.
 
+---
+
+## 5. Agent 4: PR Review Protocol (Code Review & Acceptance Criteria Verification)
+
+### Step 1: Trigger Condition
+Invoked immediately after Agent 2 opens the Pull Request (Phase 5). The ticket is blocked from proceeding until the PR review passes.
+
+### Step 2: Verification Checklist
+1. **JIRA Requirements & Acceptance Criteria:**
+   - Review JIRA ticket and `agent-context/tickets/<TICKET-KEY>/plan.md`.
+   - Verify all requested fields, validation rules, flows, and components are present in the PR diff.
+2. **Code Standards & Best Practices:**
+   - Inspect git diff: `git diff main...portal/<TICKET-KEY>`.
+   - Verify API names have `__c` suffix, PascalCase/camelCase conventions, required attributes, and descriptions.
+   - Confirm living memory updates (`agent-context/MEMORY.md` and `CHANGELOG.md`).
+
+### Step 3: Review Execution Report
+Agent 4 writes a review audit to:
+`agent-context/tickets/<TICKET-KEY>/pr-review.md`
+With verdict `REVIEW_RESULT: APPROVED` or `REVIEW_RESULT: CHANGES_REQUESTED`.
+
+### Step 4: PR Review Loop Resolution
+- **If Changes Requested:**
+  - Adds a detailed review comment to the GitHub PR listing all required fixes.
+  - Posts review failure update and required fixes to the Slack thread.
+  - Spawns Agent 2 (Builder in PR Fix Mode) to address the comments, redeploy, commit, and push to the PR branch.
+  - Re-invokes Agent 4 for re-review.
+- **If Approved:**
+  - Submits official approval on GitHub PR (`gh pr review --approve`).
+  - Posts approval confirmation and review audit to Slack thread with JIRA & GitHub action buttons.
+  - Only then does the ticket proceed to JIRA Finalization and QA Testing.
+
+
 

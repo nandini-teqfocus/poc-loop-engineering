@@ -136,3 +136,61 @@ export function parseTestResult(output, ticketKey) {
   return { passed, bugDetails, summary, reportContent };
 }
 
+/**
+ * Parses the PR Review Agent (Agent 4) output and pr-review.md
+ * @param {string} output Agent stdout text
+ * @param {string} ticketKey E.g. SCRUM-8
+ * @returns {{ approved: boolean, reviewComments: string, summary: string, reviewReport: string }}
+ */
+export function parseReviewResult(output, ticketKey) {
+  let reviewReport = '';
+  try {
+    const reportPath = path.join(process.cwd(), 'agent-context', 'tickets', ticketKey, 'pr-review.md');
+    if (fs.existsSync(reportPath)) {
+      reviewReport = fs.readFileSync(reportPath, 'utf8');
+    }
+  } catch (e) {}
+
+  const combined = `${output || ''}\n\n${reviewReport}`;
+
+  const approveMatch = combined.match(/REVIEW_RESULT:\s*APPROVED\b/i);
+  const changesMatch = combined.match(/REVIEW_RESULT:\s*CHANGES_REQUESTED\b/i);
+
+  let approved = false;
+  if (approveMatch && !changesMatch) {
+    approved = true;
+  } else if (changesMatch) {
+    approved = false;
+  } else {
+    // Fallback heuristic
+    if (/all acceptance criteria (are )?(met|covered|satisfied|approved)/i.test(combined) && !/changes requested|missing|fix/i.test((output || '').slice(-200))) {
+      approved = true;
+    } else {
+      approved = false;
+    }
+  }
+
+  let reviewComments = '';
+  let summary = '';
+
+  if (!approved) {
+    const commentsDirective = combined.match(/REVIEW_COMMENTS:\s*([\s\S]+?)(?=\n(?:REVIEW_RESULT|REVIEW_SUMMARY|FIX_COMPLETE):|$)/i);
+    if (commentsDirective && commentsDirective[1].trim()) {
+      reviewComments = commentsDirective[1].trim();
+    } else {
+      const sectionMatch = reviewReport.match(/###\s*(?:Required Fixes|Changes Requested|Issues)[\s\S]*?(?=\n##|$)/i);
+      if (sectionMatch) {
+        reviewComments = sectionMatch[0].trim();
+      } else {
+        reviewComments = 'PR Reviewer identified missing requirements or acceptance criteria discrepancies.';
+      }
+    }
+  } else {
+    const sumDirective = combined.match(/REVIEW_SUMMARY:\s*([^\n\r]+)/i);
+    summary = sumDirective ? sumDirective[1].trim() : 'All requirements and acceptance criteria verified. PR approved.';
+  }
+
+  return { approved, reviewComments, summary, reviewReport };
+}
+
+
