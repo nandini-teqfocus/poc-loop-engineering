@@ -12,6 +12,22 @@ function getJiraConfig() {
   return { baseUrl, authHeader };
 }
 
+/**
+ * Constructs the direct browser URL for a given JIRA issue
+ * @param {string} issueKey E.g. SCRUM-6
+ * @returns {string} E.g. https://snandini548.atlassian.net/browse/SCRUM-6
+ */
+export function getJiraTicketUrl(issueKey) {
+  try {
+    const rawUrl = process.env.JIRA_BASE_URL?.trim();
+    if (!rawUrl) return null;
+    const baseUrl = new URL(rawUrl).origin;
+    return `${baseUrl}/browse/${encodeURIComponent(issueKey)}`;
+  } catch (e) {
+    return null;
+  }
+}
+
 export function extractTextFromAdf(doc) {
   if (!doc) return '';
   if (typeof doc === 'string') return doc;

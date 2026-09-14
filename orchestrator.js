@@ -4,8 +4,8 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf } from './src/jira.js';
-import { initSlack, postSlackMessage, askSlackQuestion } from './src/slack.js';
+import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl } from './src/jira.js';
+import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase } from './src/slack.js';
 import { runAgent, parseNeedsInput } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt } from './src/prompts.js';
 
@@ -34,159 +34,241 @@ export async function executeLoopForTicket(ticketKey) {
   let threadTs = null;
 
   try {
-    // 1. Fetch ticket details from JIRA
-    console.log(`[ORCHESTRATOR] Fetching details from JIRA for ${ticketKey}...`);
-    const issue = await getJiraIssue(ticketKey);
-    const summary = issue.fields?.summary || 'No summary';
-    const description = extractTextFromAdf(issue.fields?.description) || 'No description provided';
+    let currentPhase = { number: 1, name: 'Ticket Ingestion & Initialization' };
 
-
-    console.log(`[ORCHESTRATOR] Ticket Title: ${summary}`);
-    const currentStatus = issue.fields?.status?.name?.toLowerCase();
-    console.log(`[ORCHESTRATOR] Current Status: ${issue.fields?.status?.name}`);
-
-    // Ensure ticket is in 'In Progress' state before proceeding
-    if (currentStatus === 'to do' || currentStatus === 'todo') {
-      console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to 'In Progress'...`);
-      await transitionJiraIssue(ticketKey, ['In Progress']);
-    }
-
-
-    // 2. Announce in Slack
-    if (CHANNEL_ID) {
-      threadTs = await postSlackMessage(
-        CHANNEL_ID,
-        `🚀 *Loop Engineering Triggered*: Starting delivery for *${ticketKey}*\n*Summary:* ${summary}`
-      );
-    }
-
-    // 3. Prepare git state and ticket folder
-    console.log(`[ORCHESTRATOR] Preparing git state on branch main...`);
+    // Phase 1: Ingestion & Initialization
     try {
-      execSync('git checkout main', { stdio: 'inherit' });
-    } catch (e) {
-      console.warn('[ORCHESTRATOR] Notice: git checkout main returned warning, continuing...');
-    }
+      // 1. Fetch ticket details from JIRA
+      console.log(`[ORCHESTRATOR] Fetching details from JIRA for ${ticketKey}...`);
+      const issue = await getJiraIssue(ticketKey);
+      const summary = issue.fields?.summary || 'No summary';
+      const description = extractTextFromAdf(issue.fields?.description) || 'No description provided';
 
-    const ticketDir = path.join(process.cwd(), 'agent-context', 'tickets', ticketKey);
-    if (!fs.existsSync(ticketDir)) {
-      fs.mkdirSync(ticketDir, { recursive: true });
-    }
+      console.log(`[ORCHESTRATOR] Ticket Title: ${summary}`);
+      const currentStatus = issue.fields?.status?.name?.toLowerCase();
+      console.log(`[ORCHESTRATOR] Current Status: ${issue.fields?.status?.name}`);
 
-    // 4. Run Agent 1 (Planner)
-    console.log(`\n[ORCHESTRATOR] Spawning Agent 1 (Planner)...`);
-    if (threadTs) {
-      await postSlackMessage(CHANNEL_ID, `📋 *Agent 1 (Planner)* is analyzing requirements and project memory...`, threadTs);
-    }
-
-    let agent1Prompt = buildAgent1Prompt({ ticketKey, summary, description });
-    let isContinue = false;
-    let planComplete = false;
-    let maxIterations = 5;
-
-    while (!planComplete && maxIterations > 0) {
-      maxIterations--;
-      const result = await runAgent(agent1Prompt, isContinue);
-      const question = parseNeedsInput(result.output);
-
-      if (question) {
-        console.log(`\n[ORCHESTRATOR] Agent 1 requested clarification: "${question}"`);
-        if (!CHANNEL_ID || !threadTs) {
-          throw new Error(`Agent 1 requested clarification, but Slack is not configured: "${question}"`);
-        }
-
-        const answer = await askSlackQuestion(CHANNEL_ID, threadTs, question);
-        console.log(`[ORCHESTRATOR] Developer responded: "${answer}"`);
-        await postSlackMessage(CHANNEL_ID, `👍 Received your answer. Resuming Agent 1...`, threadTs);
-
-        agent1Prompt = `The developer replied: "${answer}". Continue the task and produce agent-context/tickets/${ticketKey}/plan.md.`;
-        isContinue = true;
-      } else {
-        const planPath = path.join(ticketDir, 'plan.md');
-        if (fs.existsSync(planPath)) {
-          console.log(`[ORCHESTRATOR] Found plan.md at ${planPath}`);
-          planComplete = true;
-        } else {
-          console.warn(`[ORCHESTRATOR] Agent 1 exited without plan.md. Inspecting output.`);
-          planComplete = true; // Proceed or log
-        }
+      // Ensure ticket is in 'In Progress' state before proceeding
+      if (currentStatus === 'to do' || currentStatus === 'todo') {
+        console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to 'In Progress'...`);
+        await transitionJiraIssue(ticketKey, ['In Progress']);
       }
-    }
 
-    if (threadTs) {
-      await postSlackMessage(CHANNEL_ID, `✅ *Agent 1 finished plan.md*.\nNow spawning *Agent 2 (Builder)* to implement and deploy to Salesforce...`, threadTs);
-    }
+      // 2. Announce in Slack
+      const jiraUrl = getJiraTicketUrl(ticketKey);
+      if (CHANNEL_ID) {
+        threadTs = await postSlackMessage(
+          CHANNEL_ID,
+          `🚀 *Loop Engineering Triggered*: Starting delivery for *${ticketKey}*\n*Summary:* ${summary}`,
+          null,
+          { jiraUrl }
+        );
+      }
 
-    // 5. Checkout feature branch for Agent 2
-    const branchName = `portal/${ticketKey}`;
-    console.log(`[ORCHESTRATOR] Switching to branch ${branchName}...`);
-    try {
-      execSync(`git checkout -B ${branchName}`, { stdio: 'inherit' });
-    } catch (e) {
-      console.error(`[ORCHESTRATOR] Error creating branch:`, e.message);
-    }
-
-    // 6. Run Agent 2 (Builder)
-    console.log(`\n[ORCHESTRATOR] Spawning Agent 2 (Builder)...`);
-    const agent2Prompt = buildAgent2Prompt({ ticketKey, summary });
-    const agent2Result = await runAgent(agent2Prompt, false);
-
-    // 7. Extract PR URL
-    let prUrl = null;
-    const prMatch = agent2Result.output.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/);
-    if (prMatch) {
-      prUrl = prMatch[0];
-    } else {
+      // 3. Prepare git state and ticket folder
+      console.log(`[ORCHESTRATOR] Preparing git state on branch main...`);
       try {
-        const ghOut = execSync(`gh pr list --head ${branchName} --json url -q ".[0].url"`, { encoding: 'utf8' }).trim();
-        if (ghOut) prUrl = ghOut;
+        execSync('git checkout main', { stdio: 'inherit' });
       } catch (e) {
-        console.warn('[ORCHESTRATOR] Could not auto-detect PR URL via gh CLI.');
+        console.warn('[ORCHESTRATOR] Notice: git checkout main returned warning, continuing...');
       }
-    }
 
-    console.log(`[ORCHESTRATOR] Detected PR URL: ${prUrl || 'None'}`);
+      const ticketDir = path.join(process.cwd(), 'agent-context', 'tickets', ticketKey);
+      if (!fs.existsSync(ticketDir)) {
+        fs.mkdirSync(ticketDir, { recursive: true });
+      }
 
-    // 8. Update JIRA
-    const jiraComment = prUrl
-      ? `Automated delivery completed by Agent Loop.\n\nPull Request: ${prUrl}\n\nBranch: ${branchName}`
-      : `Automated delivery completed by Agent Loop for branch ${branchName}.`;
+      await notifyPhase(CHANNEL_ID, threadTs, {
+        phaseNumber: 1,
+        phaseName: 'Ticket Ingestion & Initialization',
+        status: 'Completed',
+        summary: `Fetched JIRA issue details for *${ticketKey}*, transitioned status to *In Progress*, initialized ticket workspace directory on main branch.`,
+        nextPhase: 'Phase 2: Planning & Requirement Analysis (Agent 1)',
+        jiraUrl
+      });
 
-    console.log(`[ORCHESTRATOR] Posting comment to JIRA ${ticketKey}...`);
-    try {
-      await addJiraComment(ticketKey, jiraComment);
-    } catch (e) {
-      console.error('[ORCHESTRATOR] Failed to add JIRA comment:', e.message);
-    }
+      // Phase 2: Planning & Analysis (Agent 1)
+      currentPhase = { number: 2, name: 'Planning & Requirement Analysis (Agent 1)' };
+      console.log(`\n[ORCHESTRATOR] Spawning Agent 1 (Planner)...`);
 
-    console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to In Review / Code Review...`);
-    try {
-      await transitionJiraIssue(ticketKey, ['In Review', 'Code Review']);
-    } catch (e) {
-      console.error('[ORCHESTRATOR] Failed to transition JIRA ticket:', e.message);
-    }
+      let agent1Prompt = buildAgent1Prompt({ ticketKey, summary, description });
+      let isContinue = false;
+      let planComplete = false;
+      let maxIterations = 5;
 
-    // 9. Post completion message to Slack
-    if (CHANNEL_ID && threadTs) {
-      await postSlackMessage(
-        CHANNEL_ID,
-        `🎉 *Delivery Complete for ${ticketKey}!*
+      while (!planComplete && maxIterations > 0) {
+        maxIterations--;
+        const result = await runAgent(agent1Prompt, isContinue);
+        const question = parseNeedsInput(result.output);
+
+        if (question) {
+          console.log(`\n[ORCHESTRATOR] Agent 1 requested clarification: "${question}"`);
+          if (!CHANNEL_ID || !threadTs) {
+            throw new Error(`Agent 1 requested clarification, but Slack is not configured: "${question}"`);
+          }
+
+          const answer = await askSlackQuestion(CHANNEL_ID, threadTs, question);
+          console.log(`[ORCHESTRATOR] Developer responded: "${answer}"`);
+          await postSlackMessage(CHANNEL_ID, `👍 Received your answer. Resuming Agent 1...`, threadTs);
+
+          agent1Prompt = `The developer replied: "${answer}". Continue the task and produce agent-context/tickets/${ticketKey}/plan.md.`;
+          isContinue = true;
+        } else {
+          const planPath = path.join(ticketDir, 'plan.md');
+          if (fs.existsSync(planPath)) {
+            console.log(`[ORCHESTRATOR] Found plan.md at ${planPath}`);
+            planComplete = true;
+          } else {
+            console.warn(`[ORCHESTRATOR] Agent 1 exited without plan.md. Inspecting output.`);
+            planComplete = true; // Proceed or log
+          }
+        }
+      }
+
+      const planPath = path.join(ticketDir, 'plan.md');
+      const planCreated = fs.existsSync(planPath);
+
+      await notifyPhase(CHANNEL_ID, threadTs, {
+        phaseNumber: 2,
+        phaseName: 'Planning & Requirement Analysis (Agent 1)',
+        status: planCreated ? 'Completed' : 'Failed',
+        summary: planCreated
+          ? `Analyzed project memory and requirements. Formulated comprehensive implementation plan at \`agent-context/tickets/${ticketKey}/plan.md\`.`
+          : `Agent 1 completed without generating \`agent-context/tickets/${ticketKey}/plan.md\`.`,
+        nextPhase: 'Phase 3: Branch Setup & Environment Preparation',
+        jiraUrl
+      });
+
+      if (!planCreated) {
+        throw new Error(`Execution halted: plan.md was not generated by Agent 1.`);
+      }
+
+      // Phase 3: Branch Setup & Environment Preparation
+      currentPhase = { number: 3, name: 'Branch Setup & Environment Preparation' };
+      const branchName = `portal/${ticketKey}`;
+      console.log(`[ORCHESTRATOR] Switching to branch ${branchName}...`);
+      try {
+        execSync(`git checkout -B ${branchName}`, { stdio: 'inherit' });
+      } catch (e) {
+        console.error(`[ORCHESTRATOR] Error creating branch:`, e.message);
+        throw new Error(`Failed to create or switch to branch ${branchName}: ${e.message}`);
+      }
+
+      await notifyPhase(CHANNEL_ID, threadTs, {
+        phaseNumber: 3,
+        phaseName: 'Branch Setup & Environment Preparation',
+        status: 'Completed',
+        summary: `Created and checked out isolated ticket feature branch \`${branchName}\`.`,
+        nextPhase: 'Phase 4: Implementation & Salesforce Deployment (Agent 2)',
+        jiraUrl
+      });
+
+      // Phase 4: Implementation & Salesforce Deployment (Agent 2)
+      currentPhase = { number: 4, name: 'Implementation & Salesforce Deployment (Agent 2)' };
+      console.log(`\n[ORCHESTRATOR] Spawning Agent 2 (Builder)...`);
+      const agent2Prompt = buildAgent2Prompt({ ticketKey, summary });
+      const agent2Result = await runAgent(agent2Prompt, false);
+
+      if (agent2Result.code !== 0) {
+        throw new Error(`Agent 2 process exited with non-zero error code: ${agent2Result.code}`);
+      }
+
+      // Extract PR URL
+      let prUrl = null;
+      const prMatch = agent2Result.output.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/);
+      if (prMatch) {
+        prUrl = prMatch[0];
+      } else {
+        try {
+          const ghOut = execSync(`gh pr list --head ${branchName} --json url -q ".[0].url"`, { encoding: 'utf8' }).trim();
+          if (ghOut) prUrl = ghOut;
+        } catch (e) {
+          console.warn('[ORCHESTRATOR] Could not auto-detect PR URL via gh CLI.');
+        }
+      }
+
+      console.log(`[ORCHESTRATOR] Detected PR URL: ${prUrl || 'None'}`);
+
+      await notifyPhase(CHANNEL_ID, threadTs, {
+        phaseNumber: 4,
+        phaseName: 'Implementation & Salesforce Deployment (Agent 2)',
+        status: 'Completed',
+        summary: `Metadata created/updated, deployed successfully to \`time-sheet\` org, living memory (\`MEMORY.md\` & \`CHANGELOG.md\`) updated, changes committed and PR created (${prUrl || 'branch ' + branchName}).`,
+        nextPhase: 'Phase 5: JIRA & Finalization',
+        jiraUrl,
+        githubUrl: prUrl
+      });
+
+      // Phase 5: JIRA & Finalization
+      currentPhase = { number: 5, name: 'JIRA & Finalization' };
+      const jiraComment = prUrl
+        ? `Automated delivery completed by Agent Loop.\n\nPull Request: ${prUrl}\n\nBranch: ${branchName}`
+        : `Automated delivery completed by Agent Loop for branch ${branchName}.`;
+
+      console.log(`[ORCHESTRATOR] Posting comment to JIRA ${ticketKey}...`);
+      try {
+        await addJiraComment(ticketKey, jiraComment);
+      } catch (e) {
+        console.error('[ORCHESTRATOR] Failed to add JIRA comment:', e.message);
+      }
+
+      console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to In Review / Code Review...`);
+      try {
+        await transitionJiraIssue(ticketKey, ['In Review', 'Code Review']);
+      } catch (e) {
+        console.error('[ORCHESTRATOR] Failed to transition JIRA ticket:', e.message);
+      }
+
+      await notifyPhase(CHANNEL_ID, threadTs, {
+        phaseNumber: 5,
+        phaseName: 'JIRA & Finalization',
+        status: 'Completed',
+        summary: `Posted completion comment with PR reference to JIRA ${ticketKey} and transitioned issue status to *In Review*.`,
+        nextPhase: null,
+        jiraUrl,
+        githubUrl: prUrl
+      });
+
+      // Final summary message to Slack with both JIRA and GitHub PR buttons
+      if (CHANNEL_ID && threadTs) {
+        await postSlackMessage(
+          CHANNEL_ID,
+          `🎉 *Delivery Complete for ${ticketKey}!*
 • *Status:* Deployed to \`time-sheet\` org & moved to *In Review*
 • *Pull Request:* ${prUrl || 'PR created on branch ' + branchName}
 • *Memory Updated:* \`agent-context/MEMORY.md\` & \`CHANGELOG.md\` updated.`,
-        threadTs
-      );
-    }
+          threadTs,
+          { jiraUrl, githubUrl: prUrl }
+        );
+      }
 
-    console.log(`\n[ORCHESTRATOR] Ticket ${ticketKey} successfully delivered end-to-end!\n`);
+      console.log(`\n[ORCHESTRATOR] Ticket ${ticketKey} successfully delivered end-to-end!\n`);
+
+    } catch (phaseErr) {
+      // Send clear failure update for the specific failed phase
+      const jiraUrl = getJiraTicketUrl(ticketKey);
+      if (CHANNEL_ID && threadTs) {
+        await notifyPhase(CHANNEL_ID, threadTs, {
+          phaseNumber: currentPhase.number,
+          phaseName: currentPhase.name,
+          status: 'Failed',
+          summary: `Phase failed with error: ${phaseErr.message}`,
+          nextPhase: null,
+          jiraUrl
+        });
+      }
+      throw phaseErr;
+    }
 
   } catch (err) {
     console.error(`[ORCHESTRATOR ERROR] Execution failed for ${ticketKey}:`, err);
+    const jiraUrl = getJiraTicketUrl(ticketKey);
     if (CHANNEL_ID && threadTs) {
       await postSlackMessage(
         CHANNEL_ID,
         `❌ *Error during delivery for ${ticketKey}:* ${err.message}`,
-        threadTs
+        threadTs,
+        { jiraUrl }
       );
     }
   } finally {
