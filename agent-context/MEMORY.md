@@ -6,7 +6,10 @@ Agent 1 reads this document FIRST before planning any new ticket.
 ---
 
 ## Account Object
-- *No custom portal fields deployed yet. Baseline state.*
+- Fields added in SCRUM-10:
+  - `Service_Tier__c` (Picklist: Standard, Silver, Gold, Platinum) - Customer service level tier.
+  - `Onboarding_Date__c` (Date) - Date when account onboarding was officially completed.
+- Not yet done: Fields not yet exposed on Experience Cloud portal account record pages or layouts.
 
 ## Contact Object
 - Fields added in SCRUM-6:
