@@ -23,3 +23,12 @@ Append-only ledger of completed tickets. Each entry contains the ticket key, dat
     - `force-app/main/default/objects/Opportunity/fields/Coverage_Status__c.field-meta.xml`
   - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/4
 
+- **Ticket**: SCRUM-10
+  - **Date**: 2026-09-14
+  - **Summary**: Create 2 custom fields on Account object (Service_Tier__c, Onboarding_Date__c).
+  - **Artifacts**:
+    - `force-app/main/default/objects/Account/fields/Service_Tier__c.field-meta.xml`
+    - `force-app/main/default/objects/Account/fields/Onboarding_Date__c.field-meta.xml`
+  - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/6
+
+
