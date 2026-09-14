@@ -209,12 +209,13 @@ app.post('/webhook/jira', async (req, res) => {
 
   const statusChange = body.changelog?.items?.find(
     (item) => item.field === 'status' && item.toString?.toLowerCase() === 'in progress'
-  );
+  ) || (body.issue?.fields?.status?.name?.toLowerCase() === 'in progress');
 
   if (statusChange) {
     console.log(`[WEBHOOK] Issue ${issueKey} transitioned to 'In Progress'. Triggering loop...`);
     executeLoopForTicket(issueKey);
   } else {
+
     console.log(`[WEBHOOK] Event for ${issueKey} is not a transition to 'In Progress'. Ignoring.`);
   }
 });

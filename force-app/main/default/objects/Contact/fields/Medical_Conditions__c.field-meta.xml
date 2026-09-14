@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Medical_Conditions__c</fullName>
+    <description>Known medical conditions of the contact (e.g., Diabetes, Asthma).</description>
+    <inlineHelpText>Specify any known medical conditions.</inlineHelpText>
+    <label>Medical Conditions</label>
+    <length>32768</length>
+    <required>false</required>
+    <trackFeedHistory>false</trackFeedHistory>
+    <type>LongTextArea</type>
+    <visibleLines>3</visibleLines>
+</CustomField>
