@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl } from './src/jira.js';
-import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase } from './src/slack.js';
+import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket } from './src/slack.js';
 import { runAgent, parseNeedsInput } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt } from './src/prompts.js';
 
@@ -48,21 +48,41 @@ export async function executeLoopForTicket(ticketKey) {
       const currentStatus = issue.fields?.status?.name?.toLowerCase();
       console.log(`[ORCHESTRATOR] Current Status: ${issue.fields?.status?.name}`);
 
+      // 2. Announce in Slack & register thread
+      const jiraUrl = getJiraTicketUrl(ticketKey);
+      if (CHANNEL_ID) {
+        const existingTs = getTicketThread(ticketKey);
+        if (!existingTs) {
+          threadTs = await postSlackMessage(
+            CHANNEL_ID,
+            `🚀 *Loop Engineering Triggered*: Starting delivery for *${ticketKey}*\n*Summary:* ${summary}`,
+            null,
+            { jiraUrl }
+          );
+          registerTicketThread(ticketKey, threadTs);
+        } else {
+          threadTs = existingTs;
+          await postSlackMessage(
+            CHANNEL_ID,
+            `🚀 *Loop Engineering Triggered*: Starting delivery for *${ticketKey}*\n*Summary:* ${summary}`,
+            threadTs,
+            { jiraUrl }
+          );
+        }
+      }
+
       // Ensure ticket is in 'In Progress' state before proceeding
       if (currentStatus === 'to do' || currentStatus === 'todo') {
         console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to 'In Progress'...`);
         await transitionJiraIssue(ticketKey, ['In Progress']);
-      }
-
-      // 2. Announce in Slack
-      const jiraUrl = getJiraTicketUrl(ticketKey);
-      if (CHANNEL_ID) {
-        threadTs = await postSlackMessage(
-          CHANNEL_ID,
-          `🚀 *Loop Engineering Triggered*: Starting delivery for *${ticketKey}*\n*Summary:* ${summary}`,
-          null,
-          { jiraUrl }
-        );
+        await notifyStageChange(CHANNEL_ID, {
+          ticketKey,
+          fromStage: issue.fields?.status?.name || 'To Do',
+          toStage: 'In Progress',
+          summary: `Ticket picked up by autonomous delivery loop.`,
+          jiraUrl,
+          threadTs
+        });
       }
 
       // 3. Prepare git state and ticket folder
@@ -215,6 +235,15 @@ export async function executeLoopForTicket(ticketKey) {
       console.log(`[ORCHESTRATOR] Transitioning JIRA ${ticketKey} to In Review / Code Review...`);
       try {
         await transitionJiraIssue(ticketKey, ['In Review', 'Code Review']);
+        await notifyStageChange(CHANNEL_ID, {
+          ticketKey,
+          fromStage: 'In Progress',
+          toStage: 'In Review',
+          summary: `Autonomous delivery loop completed. Work submitted for code review via PR: ${prUrl || branchName}`,
+          jiraUrl,
+          githubUrl: prUrl,
+          threadTs
+        });
       } catch (e) {
         console.error('[ORCHESTRATOR] Failed to transition JIRA ticket:', e.message);
       }
@@ -285,20 +314,47 @@ app.post('/webhook/jira', async (req, res) => {
   const body = req.body;
   console.log('\n[WEBHOOK] Received JIRA webhook event:', body.webhookEvent);
 
-  // Check if issue was transitioned to "In Progress"
   const issueKey = body.issue?.key;
   if (!issueKey) return;
 
-  const statusChange = body.changelog?.items?.find(
-    (item) => item.field === 'status' && item.toString?.toLowerCase() === 'in progress'
-  ) || (body.issue?.fields?.status?.name?.toLowerCase() === 'in progress');
+  const summary = body.issue?.fields?.summary || '';
+  const jiraUrl = getJiraTicketUrl(issueKey);
+  const githubUrl = getPrUrlForTicket(issueKey);
 
-  if (statusChange) {
-    console.log(`[WEBHOOK] Issue ${issueKey} transitioned to 'In Progress'. Triggering loop...`);
-    executeLoopForTicket(issueKey);
+  // Check if changelog contains a status/stage change
+  const statusItem = body.changelog?.items?.find(
+    (item) => item.field === 'status'
+  );
+
+  if (statusItem) {
+    const fromStage = statusItem.fromString || 'Initial';
+    const toStage = statusItem.toString || body.issue?.fields?.status?.name || 'Unknown';
+    console.log(`[WEBHOOK] Stage change detected for ${issueKey}: "${fromStage}" ➔ "${toStage}"`);
+
+    await notifyStageChange(CHANNEL_ID, {
+      ticketKey: issueKey,
+      fromStage,
+      toStage,
+      summary: summary ? `Ticket: *${summary}*` : null,
+      jiraUrl,
+      githubUrl
+    });
+
+    if (toStage.toLowerCase() === 'in progress') {
+      console.log(`[WEBHOOK] Issue ${issueKey} transitioned to 'In Progress'. Triggering autonomous delivery loop...`);
+      executeLoopForTicket(issueKey);
+    } else {
+      console.log(`[WEBHOOK] Stage '${toStage}' updated in Slack. Autonomous loop not required.`);
+    }
   } else {
-
-    console.log(`[WEBHOOK] Event for ${issueKey} is not a transition to 'In Progress'. Ignoring.`);
+    // If no changelog item, check if overall issue is "In Progress"
+    const currentStatus = body.issue?.fields?.status?.name?.toLowerCase();
+    if (currentStatus === 'in progress') {
+      console.log(`[WEBHOOK] Issue ${issueKey} status is 'In Progress'. Triggering autonomous delivery loop...`);
+      executeLoopForTicket(issueKey);
+    } else {
+      console.log(`[WEBHOOK] Event for ${issueKey} received without status transition.`);
+    }
   }
 });
 
