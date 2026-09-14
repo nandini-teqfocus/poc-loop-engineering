@@ -207,6 +207,40 @@ export async function createJiraIssue({ projectKey = 'SCRUM', summary, descripti
     throw new Error(`Failed to create JIRA issue: ${res.status} ${text}`);
   }
 
-  return await res.json();
+  const issueData = await res.json();
+
+  // If there is an active sprint on the board, move the issue into it so it appears on the active board
+  try {
+    const boardRes = await fetch(`${baseUrl}/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(projectKey)}`, {
+      headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+    });
+    if (boardRes.ok) {
+      const boardData = await boardRes.json();
+      const boardId = boardData.values?.[0]?.id;
+      if (boardId) {
+        const sprintRes = await fetch(`${baseUrl}/rest/agile/1.0/board/${boardId}/sprint?state=active`, {
+          headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+        });
+        if (sprintRes.ok) {
+          const sprintData = await sprintRes.json();
+          const activeSprintId = sprintData.values?.[0]?.id;
+          if (activeSprintId) {
+            await fetch(`${baseUrl}/rest/agile/1.0/sprint/${activeSprintId}/issue`, {
+              method: 'POST',
+              headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ issues: [issueData.key] })
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal if agile sprint assignment is unavailable
+  }
+
+  return issueData;
 }
 
