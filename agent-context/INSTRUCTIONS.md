@@ -78,3 +78,40 @@ In the same working branch, Agent 2 **must**:
   gh pr create --title "<TICKET-KEY>: <short summary>" --body "<summary>" --base main
   ```
 - Emit the final PR URL upon completion.
+
+---
+
+## 3. Agent 3: Tester Protocol (QA & Acceptance Testing)
+
+### Step 1: Trigger Condition
+When a JIRA ticket reaches **In Review**, Agent 3 is invoked to validate the implementation.
+
+### Step 2: Verification Checklist
+1. **Metadata & Org Validation:**
+   - Execute dry-run deployment to target org:
+     ```bash
+     sf project deploy start --dry-run --target-org time-sheet
+     ```
+   - Verify zero errors, missing dependencies, or syntax issues.
+2. **Acceptance Criteria Verification:**
+   - Read `agent-context/tickets/<TICKET-KEY>/plan.md`.
+   - Inspect files under `force-app/main/default/` to verify every field label, API name (`__c`), data type, picklist value, and validation rule matches specifications.
+   - Confirm living memory updates (`agent-context/MEMORY.md` and `CHANGELOG.md`).
+
+### Step 3: Test Execution Report
+Agent 3 writes an audit report to:
+`agent-context/tickets/<TICKET-KEY>/test-report.md`
+With verdict `TEST_RESULT: PASS` or `TEST_RESULT: FAIL` (with a dedicated `### Bug & Failure Details` section).
+
+### Step 4: Test Loop Resolution
+- **If Passed:**
+  - JIRA ticket transitions: **`In Review` ➔ `Done`**.
+  - JIRA comment and Slack notification posted with test passing confirmation.
+- **If Bug/Failure Found:**
+  - JIRA ticket transitions: **`In Review` ➔ `In Progress`**.
+  - Bug report posted to JIRA and Slack thread.
+  - Agent 2 (Builder) runs in Fix Mode to resolve all issues, redeploy to `time-sheet`, and push changes.
+  - JIRA ticket transitions back: **`In Progress` ➔ `In Review`**.
+  - Agent 3 runs again to re-validate.
+  - The loop repeats until all acceptance criteria pass.
+

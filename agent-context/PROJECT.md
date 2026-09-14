@@ -6,6 +6,7 @@ This repository contains the source code, metadata, and agent delivery infrastru
 The project delivers features incrementally across multiple JIRA tickets through an autonomous delivery loop:
 1. **Agent 1 (Planner):** Produces a technical `plan.md` based on ticket requirements and current project memory.
 2. **Agent 2 (Builder):** Implements metadata/code, verifies via deployment, commits changes, opens a GitHub PR, and updates living memory.
+3. **Agent 3 (Tester):** Validates acceptance criteria and org deployment in `In Review`. Cycles bugs back to `In Progress` for Builder resolution until all tests pass, then transitions ticket to `Done`.
 
 ---
 

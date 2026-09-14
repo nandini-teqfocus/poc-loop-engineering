@@ -55,6 +55,9 @@ export function getPrUrlForTicket(ticketKey) {
   return null;
 }
 
+// Track recent transitions per ticket for debouncing duplicate webhooks
+const lastTransitionsByTicket = new Map();
+
 /**
  * Sends a dynamic notification to Slack whenever a JIRA ticket changes status/stage
  * @param {string} channel Slack Channel ID
@@ -66,6 +69,7 @@ export function getPrUrlForTicket(ticketKey) {
  * @param {string} [options.jiraUrl] Direct JIRA issue URL
  * @param {string} [options.githubUrl] GitHub PR URL
  * @param {string} [options.threadTs] Optional explicit threadTs override
+ * @param {boolean} [options.allowDuplicate=false] Bypass debouncing
  */
 export async function notifyStageChange(channel, {
   ticketKey,
@@ -74,7 +78,8 @@ export async function notifyStageChange(channel, {
   summary = null,
   jiraUrl = null,
   githubUrl = null,
-  threadTs = null
+  threadTs = null,
+  allowDuplicate = false
 }) {
   if (!channel) return null;
 
@@ -82,12 +87,16 @@ export async function notifyStageChange(channel, {
   const effectiveThreadTs = threadTs || (normalizedKey ? ticketThreads.get(normalizedKey) : null);
 
   // Deduplication key per ticket transition
-  const dedupeKey = `${normalizedKey}_${fromStage || 'none'}_to_${toStage}`;
-  if (sentStageTransitions.has(dedupeKey)) {
-    console.log(`[SLACK] Duplicate stage transition suppressed for: ${dedupeKey}`);
+  const dedupeKey = `${normalizedKey}_${(fromStage || 'none').toLowerCase()}_to_${(toStage || '').toLowerCase()}`;
+  const last = lastTransitionsByTicket.get(normalizedKey);
+  const now = Date.now();
+
+  // Suppress only if the exact same transition was sent within the last 15 seconds (webhook debounce)
+  if (!allowDuplicate && last && last.dedupeKey === dedupeKey && (now - last.timestamp < 15000)) {
+    console.log(`[SLACK] Duplicate stage transition suppressed for: ${dedupeKey} (debounced)`);
     return null;
   }
-  sentStageTransitions.add(dedupeKey);
+  lastTransitionsByTicket.set(normalizedKey, { dedupeKey, timestamp: now });
 
   let statusBadge = '🔄';
   const lowerTo = toStage.toLowerCase();
@@ -106,9 +115,10 @@ export async function notifyStageChange(channel, {
     text += `• *Context:* Ticket transitioned to *${toStage}* in JIRA.\n`;
   }
 
+  const effectiveGithubUrl = githubUrl || (normalizedKey ? getPrUrlForTicket(normalizedKey) : null);
   const buttonOptions = {};
   if (jiraUrl) buttonOptions.jiraUrl = jiraUrl;
-  if (githubUrl) buttonOptions.githubUrl = githubUrl;
+  if (effectiveGithubUrl) buttonOptions.githubUrl = effectiveGithubUrl;
 
   const resTs = await postSlackMessage(channel, text.trim(), effectiveThreadTs, buttonOptions);
 
