@@ -155,3 +155,58 @@ export async function transitionJiraIssue(issueKey, targetStatusNames) {
   console.log(`[JIRA] Transitioned ${issueKey} to '${matched.name}' (id: ${matched.id})`);
   return true;
 }
+
+export async function createJiraIssue({ projectKey = 'SCRUM', summary, description, issueTypeName = 'Task' }) {
+  const { baseUrl, authHeader } = getJiraConfig();
+
+  const content = [];
+  const paragraphs = description.split('\n\n');
+  for (const para of paragraphs) {
+    if (!para.trim()) continue;
+    content.push({
+      type: 'paragraph',
+      content: [
+        {
+          type: 'text',
+          text: para.trim()
+        }
+      ]
+    });
+  }
+
+  const payload = {
+    fields: {
+      project: { key: projectKey },
+      summary,
+      description: {
+        type: 'doc',
+        version: 1,
+        content: content.length > 0 ? content : [
+          {
+            type: 'paragraph',
+            content: [{ type: 'text', text: description || summary }]
+          }
+        ]
+      },
+      issuetype: { name: issueTypeName }
+    }
+  };
+
+  const res = await fetch(`${baseUrl}/rest/api/3/issue`, {
+    method: 'POST',
+    headers: {
+      'Authorization': authHeader,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to create JIRA issue: ${res.status} ${text}`);
+  }
+
+  return await res.json();
+}
+
