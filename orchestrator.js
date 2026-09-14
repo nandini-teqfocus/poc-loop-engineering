@@ -3,6 +3,7 @@ import express from 'express';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl } from './src/jira.js';
 import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket } from './src/slack.js';
@@ -624,6 +625,189 @@ app.post('/webhook/jira', async (req, res) => {
 });
 
 /**
+ * Identifies the associated JIRA ticket from a GitHub PR payload
+ * Checks branch head ref, title, body, and CHANGELOG.md
+ */
+export function extractTicketFromPrPayload(body) {
+  const pr = body.pull_request || body;
+  const candidates = [
+    pr.head?.ref,
+    pr.title,
+    pr.body
+  ];
+
+  for (const text of candidates) {
+    if (!text || typeof text !== 'string') continue;
+    const match = text.match(/\b([A-Z][A-Z0-9]+-\d+)\b/i);
+    if (match) {
+      return match[1].toUpperCase();
+    }
+  }
+
+  // Also check CHANGELOG.md by PR URL or PR number
+  const prUrl = pr.html_url || pr.url;
+  if (prUrl) {
+    try {
+      const changelogPath = path.join(process.cwd(), 'agent-context', 'CHANGELOG.md');
+      if (fs.existsSync(changelogPath)) {
+        const content = fs.readFileSync(changelogPath, 'utf8');
+        const lines = content.split('\n');
+        let currentTicket = null;
+        for (const line of lines) {
+          const ticketMatch = line.match(/\*\*Ticket\*\*:\s*([A-Z][A-Z0-9]+-\d+)/i);
+          if (ticketMatch) currentTicket = ticketMatch[1].toUpperCase();
+          if (currentTicket && line.includes(prUrl)) {
+            return currentTicket;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
+// In-memory set to prevent duplicate PR merge processing
+const processedPrMerges = new Set();
+
+/**
+ * Handles GitHub PR Merge event:
+ * - Identifies ticket and checks if already Done
+ * - Transitions JIRA ticket to Done
+ * - Posts status change to existing Slack thread
+ * - Adds comment to JIRA
+ * - Prevents duplicate executions
+ */
+export async function handlePrMerge({ ticketKey, prUrl, prNumber }) {
+  if (!ticketKey) return { success: false, error: 'No ticketKey provided' };
+
+  const dedupeKey = `merge_${ticketKey.toUpperCase()}_pr_${prNumber || prUrl || 'latest'}`;
+  if (processedPrMerges.has(dedupeKey)) {
+    console.log(`[PR MERGE] Merge event for ${ticketKey} (${dedupeKey}) already processed. Skipping duplicate.`);
+    return { success: true, duplicate: true };
+  }
+  processedPrMerges.add(dedupeKey);
+
+  console.log(`\n======================================================`);
+  console.log(`[PR MERGE] Processing merged PR for Ticket: ${ticketKey}`);
+  console.log(`PR URL: ${prUrl || 'N/A'}`);
+  console.log(`======================================================\n`);
+
+  const jiraUrl = getJiraTicketUrl(ticketKey);
+  const effectivePrUrl = prUrl || getPrUrlForTicket(ticketKey);
+  const threadTs = getTicketThread(ticketKey);
+
+  try {
+    // 1. Fetch current JIRA issue state
+    const issue = await getJiraIssue(ticketKey);
+    const currentStatus = issue.fields?.status?.name || 'In Review';
+    const isAlreadyDone = ['done', 'closed', 'resolved'].includes(currentStatus.toLowerCase());
+
+    console.log(`[PR MERGE] Ticket ${ticketKey} current status: ${currentStatus}`);
+
+    // 2. Transition JIRA ticket to Done if not already Done
+    if (!isAlreadyDone) {
+      console.log(`[PR MERGE] Transitioning JIRA ${ticketKey} to Done...`);
+      try {
+        await transitionJiraIssue(ticketKey, ['Done', 'Closed', 'Resolved']);
+      } catch (e) {
+        console.error(`[PR MERGE] Failed to transition ${ticketKey} to Done:`, e.message);
+      }
+
+      // Add comment to JIRA
+      try {
+        await addJiraComment(
+          ticketKey,
+          `🔀 Pull Request ${effectivePrUrl ? `(${effectivePrUrl}) ` : ''}merged into \`main\`.\n\nJIRA ticket automatically transitioned to *Done*.`
+        );
+      } catch (e) {
+        console.error('[PR MERGE] Failed to add JIRA comment on PR merge:', e.message);
+      }
+    } else {
+      console.log(`[PR MERGE] Ticket ${ticketKey} is already '${currentStatus}'. No JIRA transition needed.`);
+    }
+
+    // 3. Post status change & celebratory card to Slack
+    if (CHANNEL_ID) {
+      if (!isAlreadyDone) {
+        await notifyStageChange(CHANNEL_ID, {
+          ticketKey,
+          fromStage: currentStatus,
+          toStage: 'Done',
+          summary: `Pull Request merged into \`main\`. Ticket automatically moved to *Done*!`,
+          jiraUrl,
+          githubUrl: effectivePrUrl,
+          threadTs,
+          allowDuplicate: true
+        });
+      }
+
+      await postSlackMessage(
+        CHANNEL_ID,
+        `🔀 *Pull Request Merged into \`main\`!*
+• *Ticket:* *${ticketKey}*
+• *Status:* Moved to *Done*
+• *Pull Request:* ${effectivePrUrl || 'Merged into main'}
+• *Delivery Lifecycle:* Feature successfully delivered and merged into main branch.`,
+        threadTs,
+        { jiraUrl, githubUrl: effectivePrUrl }
+      );
+    }
+
+    console.log(`[PR MERGE] Successfully handled PR merge for ${ticketKey}.\n`);
+    return { success: true, ticketKey, status: 'Done' };
+
+  } catch (err) {
+    console.error(`[PR MERGE ERROR] Failed to handle PR merge for ${ticketKey}:`, err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Webhook Route for GitHub
+ */
+app.post('/webhook/github', async (req, res) => {
+  res.status(200).send({ received: true });
+
+  const event = req.headers['x-github-event'];
+  const body = req.body;
+
+  if (event === 'ping') {
+    console.log('\n[GITHUB WEBHOOK] Received ping event from GitHub.');
+    return;
+  }
+
+  console.log(`\n[GITHUB WEBHOOK] Received event: '${event}', action: '${body.action}'`);
+
+  // Handle pull_request event
+  if (event === 'pull_request' || body.pull_request) {
+    const action = body.action;
+    const pr = body.pull_request;
+    const isMerged = action === 'closed' && (pr?.merged === true || pr?.merged_at != null);
+
+    if (isMerged) {
+      const ticketKey = extractTicketFromPrPayload(body);
+      const prUrl = pr.html_url || pr.url;
+      const prNumber = pr.number;
+
+      console.log(`[GITHUB WEBHOOK] Detected merged PR #${prNumber} (${prUrl}) for ticket: ${ticketKey || 'UNKNOWN'}`);
+
+      if (ticketKey) {
+        await handlePrMerge({
+          ticketKey,
+          prUrl,
+          prNumber
+        });
+      } else {
+        console.warn(`[GITHUB WEBHOOK] Could not associate merged PR #${prNumber} with any JIRA ticket.`);
+      }
+    } else {
+      console.log(`[GITHUB WEBHOOK] PR event action '${action}' (merged: ${pr?.merged}). No merge action required.`);
+    }
+  }
+});
+
+/**
  * Manual Trigger Routes (Useful for testing)
  */
 app.post('/trigger/:key', (req, res) => {
@@ -638,6 +822,14 @@ app.post('/trigger-tester/:key', (req, res) => {
   runTesterWorkflowForTicket(key);
 });
 
+app.post('/trigger-merge/:key', async (req, res) => {
+  const { key } = req.params;
+  const prUrl = req.body?.prUrl || getPrUrlForTicket(key);
+  const prNumber = req.body?.prNumber || 1;
+  res.send({ triggered: true, ticket: key, workflow: 'pr_merged' });
+  await handlePrMerge({ ticketKey: key, prUrl, prNumber });
+});
+
 // Start Server & Slack Listener
 async function start() {
   await initSlack();
@@ -645,9 +837,11 @@ async function start() {
   app.listen(PORT, () => {
     console.log(`\n======================================================`);
     console.log(`🚀 Orchestrator server running on http://localhost:${PORT}`);
-    console.log(`Webhook endpoint:        http://localhost:${PORT}/webhook/jira`);
+    console.log(`JIRA Webhook endpoint:   http://localhost:${PORT}/webhook/jira`);
+    console.log(`GitHub Webhook endpoint: http://localhost:${PORT}/webhook/github`);
     console.log(`Manual trigger loop:     http://localhost:${PORT}/trigger/<TICKET-KEY>`);
     console.log(`Manual trigger tester:   http://localhost:${PORT}/trigger-tester/<TICKET-KEY>`);
+    console.log(`Manual trigger merge:    http://localhost:${PORT}/trigger-merge/<TICKET-KEY>`);
     console.log(`======================================================\n`);
   });
 
@@ -663,6 +857,19 @@ async function start() {
     const ticketKey = process.argv[testerArgIdx + 1];
     runTesterWorkflowForTicket(ticketKey);
   }
+
+  const mergeArgIdx = process.argv.indexOf('--merge');
+  if (mergeArgIdx !== -1 && process.argv[mergeArgIdx + 1]) {
+    const ticketKey = process.argv[mergeArgIdx + 1];
+    handlePrMerge({ ticketKey });
+  }
 }
 
-start();
+const isMain = process.argv[1] && (
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]) ||
+  process.argv[1].endsWith('orchestrator.js')
+);
+
+if (isMain) {
+  start();
+}

@@ -115,3 +115,15 @@ With verdict `TEST_RESULT: PASS` or `TEST_RESULT: FAIL` (with a dedicated `### B
   - Agent 3 runs again to re-validate.
   - The loop repeats until all acceptance criteria pass.
 
+---
+
+## 4. GitHub PR Merge Automation
+
+When a Pull Request associated with a ticket is merged into `main`:
+1. The GitHub webhook (`/webhook/github`) detects the `pull_request` event where `action === 'closed'` and `merged === true`.
+2. The orchestrator identifies the linked JIRA ticket from the branch ref (`portal/<TICKET-KEY>`), PR title, body, or `CHANGELOG.md`.
+3. If the ticket is not already `Done`, it automatically transitions the JIRA ticket to **`Done`** and adds a closing comment referencing the merged PR.
+4. Posts the stage transition and a celebratory completion card with JIRA & GitHub action buttons into the existing Slack thread.
+5. Duplicate merge deliveries are debounced and suppressed using in-memory idempotency tracking.
+
+
