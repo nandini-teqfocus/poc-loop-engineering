@@ -166,6 +166,9 @@ When an agent outputs `NEEDS_INPUT: <question>`, the orchestrator pauses, notifi
 
 ```
 poc-loop-engineering/
+├── .github/                  # GitHub Actions CI/CD workflows
+│   └── workflows/
+│       └── pr-review.yml     # Automated PR Review Agent on pull_request events
 ├── .env.example              # Environment variables template
 ├── .gitignore                # Git ignore configuration
 ├── CONTRIBUTING.md           # Contribution guidelines & coding conventions
@@ -193,14 +196,17 @@ poc-loop-engineering/
 │       └── flows/            # Record-triggered flows & automation
 │
 ├── scripts/                  # Operational & diagnostic utilities
+│   ├── run-pr-review.js      # PR Review Agent runner (Local CLI & GitHub Actions)
 │   ├── test-connections.js   # Verify JIRA & Slack API connectivity
 │   └── deliver-scrum6.js     # Standalone ticket delivery execution script
 │
 └── src/                      # Orchestrator modules & integration services
     ├── agentRunner.js        # Antigravity CLI process execution & output parser
     ├── jira.js               # Atlassian JIRA REST API client & ADF parser
+    ├── prReviewer.js         # PR Review Agent logic, audit checks & switch evaluator
     ├── prompts.js            # Prompt templates for Agents 1, 2, 3, and 4
-    └── slack.js              # Slack Bolt app, Socket Mode, cards & thread manager
+    ├── slack.js              # Slack Bolt app, Socket Mode, cards & thread manager
+    └── statusResponder.js    # Thread query responder for live Slack status questions
 ```
 
 ---
@@ -271,6 +277,38 @@ npm run test:connections
 | `JIRA_BASE_URL` | JIRA Cloud instance URL | Yes | `https://yourdomain.atlassian.net` |
 | `JIRA_USER_EMAIL` | JIRA user email address | Yes | `developer@domain.com` |
 | `JIRA_API_TOKEN` | JIRA Cloud REST API token | Yes | `ATATT3...` |
+| `ENABLE_PR_REVIEW_AGENT` | Master switch to enable/disable PR Review Agent | No (defaults to `true`) | `true` or `false` |
+
+---
+
+## 🤖 GitHub Actions PR Agent & Configurable Switch
+
+To optimize model token usage and decouple PR review from the long-running local process, the PR Review Agent can run directly in **GitHub Actions** while also preserving the existing local orchestrator workflow.
+
+### 1. GitHub Actions Workflow (`.github/workflows/pr-review.yml`)
+- **Triggers:** Automatically runs whenever a pull request is `opened`, `synchronize` (updated with new commits), `reopened`, or marked `ready_for_review`. Can also be manually dispatched via `workflow_dispatch`.
+- **Functionality:**
+  - Audits PR diff against JIRA acceptance criteria and Salesforce metadata standards (`force-app/main/default/`).
+  - Verifies custom field naming conventions (`__c`), XML structure, and Living Memory records (`agent-context/CHANGELOG.md`).
+  - Submits PR approval or change request badges directly on the GitHub PR.
+  - Automatically posts real-time review verdict cards into the corresponding Slack thread.
+  - Generates rich GitHub Actions Step Summaries for pull request reviewers.
+
+### 2. Configurable Switch (`ENABLE_PR_REVIEW_AGENT`)
+The PR Review Agent execution is governed by a unified ON/OFF switch across both local and CI/CD environments:
+
+| Switch Value | Local Orchestrator Behavior | GitHub Actions Workflow Behavior |
+|---|---|---|
+| **`true` (ON)** | Phase 5 executes multi-iteration automated code & standards review, posts reviews to GitHub, and notifies Slack before advancing to Phase 6. | Runs code audit, submits GitHub PR approval/change request, posts review card to Slack, and passes/fails check run. |
+| **`false` (OFF)** | Phase 5 is cleanly bypassed. The orchestrator logs the skip, sends a notification to Slack, and advances directly to Phase 6 (JIRA Finalization) and Phase 7 (QA Validation). | The action detects the switch, logs `PR Review Agent is currently disabled`, writes a clean skip summary, and exits immediately with code `0`. |
+
+**How to Configure:**
+- **Local Environment:** Set `ENABLE_PR_REVIEW_AGENT=true` (or `false`) in your `.env` file or shell environment:
+  ```bash
+  # In .env
+  ENABLE_PR_REVIEW_AGENT=false
+  ```
+- **GitHub Actions:** Set the repository variable `vars.ENABLE_PR_REVIEW_AGENT` in GitHub repository settings (**Settings ➔ Secrets and variables ➔ Actions ➔ Variables**), or pass `enable_agent: false` when triggering the workflow manually.
 
 ---
 
@@ -328,6 +366,23 @@ curl -X POST http://localhost:3000/trigger-tester/SCRUM-10
 # Trigger PR merge handler
 curl -X POST http://localhost:3000/trigger-merge/SCRUM-10
 ```
+
+---
+
+### Mode 4: Standalone & GitHub Actions PR Review (CI/CD Mode)
+Execute the PR Review Agent on-demand for any Pull Request without triggering the full loop:
+
+```bash
+# Run PR review on a specific PR number
+node scripts/run-pr-review.js --pr 6
+
+# Run PR review on a specific JIRA ticket
+node scripts/run-pr-review.js --ticket SCRUM-10
+
+# Test switch OFF behavior locally
+ENABLE_PR_REVIEW_AGENT=false node scripts/run-pr-review.js --pr 6
+```
+In GitHub Actions, the workflow triggers automatically upon opening or updating a Pull Request.
 
 ---
 

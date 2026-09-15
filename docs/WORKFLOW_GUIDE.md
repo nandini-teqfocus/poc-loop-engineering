@@ -144,3 +144,31 @@ agent-context/
         ├── pr-review.md
         └── test-report.md
 ```
+
+---
+
+## 6. GitHub Actions PR Review & Execution Switch
+
+### 6.1 Offloading to GitHub Actions CI/CD
+To reduce LLM token usage and avoid keeping the local orchestrator occupied during review loops, PR reviews can run natively in GitHub Actions via `.github/workflows/pr-review.yml`.
+- **Trigger Events:**
+  - Pull Request opened, synchronized, reopened, or ready for review.
+  - Manual dispatch with optional `enable_agent` parameter.
+- **Workflow Pipeline:**
+  1. Checks out the branch and installs project dependencies.
+  2. Evaluates the `ENABLE_PR_REVIEW_AGENT` switch.
+  3. Executes `scripts/run-pr-review.js --pr <PR_NUMBER>`.
+  4. Posts a GitHub PR review (Approval badge or Changes Requested).
+  5. Emits real-time review verdict cards into Slack.
+  6. Writes a GitHub Actions Step Summary for pull request reviewers.
+
+### 6.2 Agent Switch (ON / OFF)
+The PR Review Agent includes a configuration switch: `ENABLE_PR_REVIEW_AGENT` (default: `true`).
+
+- **When ON (`ENABLE_PR_REVIEW_AGENT=true`):**
+  - **Local Loop:** Phase 5 executes the full PR Review Agent workflow.
+  - **GitHub Actions:** Runs the PR review job, posts approvals or change requests to GitHub, and notifies Slack.
+- **When OFF (`ENABLE_PR_REVIEW_AGENT=false`):**
+  - **Local Loop:** Phase 5 is bypassed cleanly. The orchestrator updates the Slack thread and immediately moves to Phase 6 (JIRA Finalization) and Phase 7 (QA Validation).
+  - **GitHub Actions:** The workflow detects the switch, logs a skipped notice to the step summary, and terminates cleanly with exit code `0`.
+

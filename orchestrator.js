@@ -10,6 +10,7 @@ import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStage
 import { runAgent, parseNeedsInput, parseTestResult, parseReviewResult } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt, buildAgent4ReviewPrompt, buildAgent2PrReviewFixPrompt } from './src/prompts.js';
 import { updateTicketState, setActiveTicketKey } from './src/statusResponder.js';
+import { isPrReviewAgentEnabled, submitPrReview, auditPullRequest } from './src/prReviewer.js';
 
 const app = express();
 app.use(express.json());
@@ -279,20 +280,41 @@ export async function executeLoopForTicket(ticketKey) {
 
       // Phase 5: Automated PR Review (Agent 4)
       currentPhase = { number: 5, name: 'Automated PR Review (Agent 4)' };
-      updateTicketState(ticketKey, {
-        currentPhaseNumber: 5,
-        currentPhaseName: 'Automated PR Review (Agent 4)',
-        lastActivity: 'Agent 4 is reviewing PR diff against acceptance criteria',
-        nextPhase: 'Phase 6: JIRA Finalization'
-      });
-      await runPrReviewWorkflow({
-        ticketKey,
-        summary,
-        description,
-        prUrl,
-        branchName,
-        threadTs
-      });
+      if (!isPrReviewAgentEnabled()) {
+        console.log(`[ORCHESTRATOR] PR Review Agent is DISABLED via ENABLE_PR_REVIEW_AGENT switch. Skipping Phase 5 for ${ticketKey}.`);
+        updateTicketState(ticketKey, {
+          currentPhaseNumber: 5,
+          currentPhaseName: 'Automated PR Review (Agent 4) [SKIPPED]',
+          lastActivity: 'PR Review Agent disabled via switch (ENABLE_PR_REVIEW_AGENT=false)',
+          nextPhase: 'Phase 6: JIRA Finalization'
+        });
+        if (CHANNEL_ID && threadTs) {
+          await notifyPhase(CHANNEL_ID, threadTs, {
+            phaseNumber: 5,
+            phaseName: 'Automated PR Review (Agent 4)',
+            status: 'Skipped',
+            summary: `PR Review Agent is currently *disabled* via \`ENABLE_PR_REVIEW_AGENT=false\` switch. Bypassing Phase 5 review and proceeding directly to JIRA Finalization & QA Testing.`,
+            nextPhase: 'Phase 6: JIRA Finalization',
+            jiraUrl,
+            githubUrl: prUrl
+          });
+        }
+      } else {
+        updateTicketState(ticketKey, {
+          currentPhaseNumber: 5,
+          currentPhaseName: 'Automated PR Review (Agent 4)',
+          lastActivity: 'Agent 4 is reviewing PR diff against acceptance criteria',
+          nextPhase: 'Phase 6: JIRA Finalization'
+        });
+        await runPrReviewWorkflow({
+          ticketKey,
+          summary,
+          description,
+          prUrl,
+          branchName,
+          threadTs
+        });
+      }
 
       // Phase 6: JIRA Finalization & Transition to In Review
       currentPhase = { number: 6, name: 'JIRA Finalization' };
@@ -399,50 +421,12 @@ export async function executeLoopForTicket(ticketKey) {
   }
 }
 
-/**
- * Helper to submit PR review on GitHub via gh CLI
- * Falls back to review comment if authenticated user is the PR author
- */
-export function submitPrReview(prIdentifier, { action = 'COMMENT', body }) {
-  const tmpFile = path.join(process.cwd(), 'agent-context', `review-${Date.now()}.md`);
-  try {
-    fs.writeFileSync(tmpFile, body, 'utf8');
-
-    if (action === 'APPROVE') {
-      try {
-        execSync(`gh pr review ${prIdentifier} --approve -F "${tmpFile}"`, { stdio: 'pipe' });
-        console.log(`[GITHUB] Successfully approved PR #${prIdentifier} on GitHub.`);
-      } catch (err) {
-        console.warn(`[GITHUB] gh pr review --approve returned note: author cannot approve own PR. Submitting approval comment...`);
-        const approvalComment = `## ✅ PR Review: APPROVED\n\n${body}`;
-        fs.writeFileSync(tmpFile, approvalComment, 'utf8');
-        execSync(`gh pr review ${prIdentifier} --comment -F "${tmpFile}"`, { stdio: 'pipe' });
-      }
-    } else if (action === 'REQUEST_CHANGES') {
-      try {
-        execSync(`gh pr review ${prIdentifier} --request-changes -F "${tmpFile}"`, { stdio: 'pipe' });
-        console.log(`[GITHUB] Successfully requested changes on PR #${prIdentifier}.`);
-      } catch (err) {
-        console.warn(`[GITHUB] gh pr review --request-changes returned note: author cannot request changes on own PR. Submitting changes comment...`);
-        const changesComment = `## ⚠️ PR Review: CHANGES REQUESTED\n\n${body}`;
-        fs.writeFileSync(tmpFile, changesComment, 'utf8');
-        execSync(`gh pr review ${prIdentifier} --comment -F "${tmpFile}"`, { stdio: 'pipe' });
-      }
-    } else {
-      execSync(`gh pr review ${prIdentifier} --comment -F "${tmpFile}"`, { stdio: 'pipe' });
-      console.log(`[GITHUB] Added review comment to PR #${prIdentifier}.`);
-    }
-  } catch (e) {
-    console.error(`[GITHUB] Failed to submit review to PR #${prIdentifier}:`, e.message);
-  } finally {
-    if (fs.existsSync(tmpFile)) {
-      try { fs.unlinkSync(tmpFile); } catch (e) {}
-    }
-  }
-}
+// Export PR review utilities from src/prReviewer.js
+export { submitPrReview, isPrReviewAgentEnabled, auditPullRequest };
 
 /**
  * Executes the PR Review Workflow (Agent 4):
+ * - Checks if PR Review Agent is enabled via switch (ENABLE_PR_REVIEW_AGENT)
  * - Fetches linked JIRA ticket requirements & acceptance criteria
  * - Reviews GitHub PR diff and code changes
  * - If missing items found:
@@ -459,6 +443,20 @@ export async function runPrReviewWorkflow({ ticketKey, summary, description, prU
   const jiraUrl = getJiraTicketUrl(ticketKey);
   const effectivePrUrl = prUrl || getPrUrlForTicket(ticketKey);
   const effectiveBranch = branchName || `portal/${ticketKey}`;
+
+  // Configurable Switch Check
+  if (!isPrReviewAgentEnabled()) {
+    console.log(`[ORCHESTRATOR] PR Review Agent is disabled via configuration switch (ENABLE_PR_REVIEW_AGENT=false). Skipping review for ${ticketKey}.`);
+    if (CHANNEL_ID && threadTs) {
+      await postSlackMessage(
+        CHANNEL_ID,
+        `⚡ *PR Review Skipped for ${ticketKey}:* PR Review Agent is currently disabled (\`ENABLE_PR_REVIEW_AGENT=false\`).`,
+        threadTs,
+        { jiraUrl, githubUrl: effectivePrUrl }
+      );
+    }
+    return { approved: true, skipped: true };
+  }
 
   // Resolve PR number
   let prNumber = null;
@@ -635,6 +633,20 @@ export async function runPrReviewWorkflow({ ticketKey, summary, description, prU
 export async function runPrReviewForTicket(ticketKey) {
   if (isProcessing) {
     console.warn(`[ORCHESTRATOR] Already processing a task. Skipping review trigger for ${ticketKey}`);
+    return;
+  }
+
+  if (!isPrReviewAgentEnabled()) {
+    console.log(`[ORCHESTRATOR] Standalone review requested for ${ticketKey}, but PR Review Agent is disabled via configuration switch (ENABLE_PR_REVIEW_AGENT=false).`);
+    const threadTs = getTicketThread(ticketKey);
+    if (CHANNEL_ID) {
+      await postSlackMessage(
+        CHANNEL_ID,
+        `⚡ *PR Review Agent is currently disabled* via \`ENABLE_PR_REVIEW_AGENT=false\`. Standalone review for *${ticketKey}* was not executed.`,
+        threadTs || null,
+        { jiraUrl: getJiraTicketUrl(ticketKey) }
+      );
+    }
     return;
   }
 
