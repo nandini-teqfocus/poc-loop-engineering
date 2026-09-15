@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { App } from '@slack/bolt';
 import { generateStatusAnswer, getActiveTicketKey } from './statusResponder.js';
 
@@ -59,18 +60,30 @@ export function getTicketThread(ticketKey) {
  */
 export function getPrUrlForTicket(ticketKey) {
   if (!ticketKey) return null;
+  const key = ticketKey.toUpperCase();
+
+  // 1. Try finding in CHANGELOG.md
   try {
     const changelogPath = path.join(process.cwd(), 'agent-context', 'CHANGELOG.md');
     if (fs.existsSync(changelogPath)) {
       const content = fs.readFileSync(changelogPath, 'utf8');
-      const regex = new RegExp(`- \\*\\*Ticket\\*\\*:\\s*${ticketKey}[\\s\\S]*?https:\\/\\/github\\.com\\/[^\\s)]+\\/pull\\/\\d+`, 'i');
+      const regex = new RegExp(`- \\*\\*Ticket\\*\\*:\\s*${key}[\\s\\S]*?https:\\/\\/github\\.com\\/[^\\s)]+\\/pull\\/\\d+`, 'i');
       const match = content.match(regex);
       if (match) {
         const prMatch = match[0].match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/);
-        return prMatch ? prMatch[0] : null;
+        if (prMatch) return prMatch[0];
       }
     }
   } catch (e) {}
+
+  // 2. Try querying GitHub CLI for open or merged PRs matching the ticket key
+  try {
+    const ghOut = execSync(`gh pr list --state all --search "${key}" --json url -q ".[0].url"`, { encoding: 'utf8' }).trim();
+    if (ghOut && ghOut.startsWith('http')) {
+      return ghOut;
+    }
+  } catch (e) {}
+
   return null;
 }
 
