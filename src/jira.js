@@ -244,3 +244,41 @@ export async function createJiraIssue({ projectKey = 'SCRUM', summary, descripti
   return issueData;
 }
 
+/**
+ * Searches JIRA issues using JQL via /rest/api/3/search/jql
+ * @param {Object} options
+ * @param {string} options.jql JQL query string
+ * @param {Array<string>} options.fields Fields to return
+ * @param {number} options.maxResults Max number of issues
+ * @returns {Promise<Array>} List of matched issues
+ */
+export async function searchJiraIssues({ jql, fields = ['summary', 'status', 'description', 'updated'], maxResults = 10 }) {
+  const { baseUrl, authHeader } = getJiraConfig();
+  try {
+    const res = await fetch(`${baseUrl}/rest/api/3/search/jql`, {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        jql,
+        maxResults,
+        fields
+      })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.warn(`[JIRA] searchJiraIssues failed (${res.status}):`, text.substring(0, 150));
+      return [];
+    }
+
+    const data = await res.json();
+    return data.issues || [];
+  } catch (err) {
+    console.warn(`[JIRA] searchJiraIssues exception:`, err.message);
+    return [];
+  }
+}

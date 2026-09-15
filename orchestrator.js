@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl } from './src/jira.js';
+import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl, searchJiraIssues } from './src/jira.js';
 import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket } from './src/slack.js';
 import { runAgent, parseNeedsInput, parseTestResult, parseReviewResult } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt, buildAgent4ReviewPrompt, buildAgent2PrReviewFixPrompt } from './src/prompts.js';
@@ -17,6 +17,7 @@ const PORT = process.env.PORT || 3000;
 const CHANNEL_ID = process.env.SLACK_CHANNEL_ID;
 
 let isProcessing = false;
+const handledStageTransitions = new Set();
 
 /**
  * Execute the autonomous delivery loop for a given ticket
@@ -28,6 +29,7 @@ export async function executeLoopForTicket(ticketKey) {
   }
 
   isProcessing = true;
+  handledStageTransitions.add(`${ticketKey}_in_progress`);
   console.log(`\n======================================================`);
   console.log(`[ORCHESTRATOR] Starting Loop for Ticket: ${ticketKey}`);
   console.log(`======================================================\n`);
@@ -818,6 +820,7 @@ export async function runTesterWorkflowForTicket(ticketKey) {
   }
 
   isProcessing = true;
+  handledStageTransitions.add(`${ticketKey}_in_review`);
   console.log(`\n[ORCHESTRATOR] Standalone tester trigger for ${ticketKey}`);
 
   try {
@@ -1174,6 +1177,60 @@ async function start() {
     const ticketKey = process.argv[mergeArgIdx + 1];
     handlePrMerge({ ticketKey });
   }
+
+  // Initialize handled tickets at startup to avoid re-triggering pre-existing active issues
+  try {
+    const existingActive = await searchJiraIssues({
+      jql: "project = SCRUM AND (status = 'In Progress' OR status = 'In Review')",
+      maxResults: 20
+    });
+    for (const issue of existingActive) {
+      const status = issue.fields?.status?.name?.toLowerCase();
+      if (status === 'in progress') handledStageTransitions.add(`${issue.key}_in_progress`);
+      if (status === 'in review') handledStageTransitions.add(`${issue.key}_in_review`);
+    }
+    console.log(`[POLL INITIALIZED] Initialized active ticket cache (${existingActive.length} existing active issues tracked).`);
+  } catch (e) {}
+
+  // Resilient Polling Fallback (every 10s: picks up tickets if webhook or tunnel drops)
+  setInterval(async () => {
+    if (isProcessing) return;
+    try {
+      // 1. Check for tickets newly moved to 'In Progress'
+      const inProgressIssues = await searchJiraIssues({
+        jql: "project = SCRUM AND status = 'In Progress' order by updated DESC",
+        maxResults: 5
+      });
+      for (const issue of inProgressIssues) {
+        const dedupeKey = `${issue.key}_in_progress`;
+        if (!handledStageTransitions.has(dedupeKey) && !isProcessing) {
+          console.log(`\n[POLL DETECT] Issue ${issue.key} moved to 'In Progress'. Triggering autonomous delivery loop...`);
+          handledStageTransitions.add(dedupeKey);
+          executeLoopForTicket(issue.key);
+          break;
+        }
+      }
+
+      if (isProcessing) return;
+
+      // 2. Check for tickets newly moved to 'In Review'
+      const inReviewIssues = await searchJiraIssues({
+        jql: "project = SCRUM AND status = 'In Review' order by updated DESC",
+        maxResults: 5
+      });
+      for (const issue of inReviewIssues) {
+        const dedupeKey = `${issue.key}_in_review`;
+        if (!handledStageTransitions.has(dedupeKey) && !isProcessing) {
+          console.log(`\n[POLL DETECT] Issue ${issue.key} moved to 'In Review'. Triggering QA Tester workflow...`);
+          handledStageTransitions.add(dedupeKey);
+          runTesterWorkflowForTicket(issue.key);
+          break;
+        }
+      }
+    } catch (e) {
+      // Ignore polling errors during transient network blips
+    }
+  }, 10000);
 }
 
 const isMain = process.argv[1] && (
