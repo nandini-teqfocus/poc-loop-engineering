@@ -9,6 +9,7 @@ import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, 
 import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket } from './src/slack.js';
 import { runAgent, parseNeedsInput, parseTestResult, parseReviewResult } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt, buildAgent4ReviewPrompt, buildAgent2PrReviewFixPrompt } from './src/prompts.js';
+import { updateTicketState, setActiveTicketKey } from './src/statusResponder.js';
 
 const app = express();
 app.use(express.json());
@@ -29,7 +30,17 @@ export async function executeLoopForTicket(ticketKey) {
   }
 
   isProcessing = true;
+  setActiveTicketKey(ticketKey);
   handledStageTransitions.add(`${ticketKey}_in_progress`);
+  updateTicketState(ticketKey, {
+    summary: 'Initializing ticket...',
+    isRunning: true,
+    currentPhaseNumber: 1,
+    currentPhaseName: 'Ticket Ingestion & Initialization',
+    lastActivity: 'Fetching ticket details from JIRA',
+    nextPhase: 'Phase 2: Planning & Requirement Analysis (Agent 1)'
+  });
+
   console.log(`\n======================================================`);
   console.log(`[ORCHESTRATOR] Starting Loop for Ticket: ${ticketKey}`);
   console.log(`======================================================\n`);
@@ -50,6 +61,12 @@ export async function executeLoopForTicket(ticketKey) {
       console.log(`[ORCHESTRATOR] Ticket Title: ${summary}`);
       const currentStatus = issue.fields?.status?.name?.toLowerCase();
       console.log(`[ORCHESTRATOR] Current Status: ${issue.fields?.status?.name}`);
+
+      updateTicketState(ticketKey, {
+        summary,
+        jiraStatus: issue.fields?.status?.name || 'In Progress',
+        lastActivity: 'Ingested JIRA ticket details'
+      });
 
       // 2. Announce in Slack & register thread
       const jiraUrl = getJiraTicketUrl(ticketKey);
@@ -112,6 +129,12 @@ export async function executeLoopForTicket(ticketKey) {
 
       // Phase 2: Planning & Analysis (Agent 1)
       currentPhase = { number: 2, name: 'Planning & Requirement Analysis (Agent 1)' };
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 2,
+        currentPhaseName: 'Planning & Requirement Analysis (Agent 1)',
+        lastActivity: 'Agent 1 is analyzing requirements and living memory...',
+        nextPhase: 'Phase 3: Branch Setup & Environment Preparation'
+      });
       console.log(`\n[ORCHESTRATOR] Spawning Agent 1 (Planner)...`);
 
       let agent1Prompt = buildAgent1Prompt({ ticketKey, summary, description });
@@ -130,9 +153,21 @@ export async function executeLoopForTicket(ticketKey) {
             throw new Error(`Agent 1 requested clarification, but Slack is not configured: "${question}"`);
           }
 
+          updateTicketState(ticketKey, {
+            isWaitingInput: true,
+            activeQuestion: question,
+            lastActivity: 'Waiting for developer clarification in Slack'
+          });
+
           const answer = await askSlackQuestion(CHANNEL_ID, threadTs, question);
           console.log(`[ORCHESTRATOR] Developer responded: "${answer}"`);
           await postSlackMessage(CHANNEL_ID, `👍 Received your answer. Resuming Agent 1...`, threadTs);
+
+          updateTicketState(ticketKey, {
+            isWaitingInput: false,
+            activeQuestion: null,
+            lastActivity: 'Developer answered clarification; resuming planning'
+          });
 
           agent1Prompt = `The developer replied: "${answer}". Continue the task and produce agent-context/tickets/${ticketKey}/plan.md.`;
           isContinue = true;
@@ -169,6 +204,14 @@ export async function executeLoopForTicket(ticketKey) {
       // Phase 3: Branch Setup & Environment Preparation
       currentPhase = { number: 3, name: 'Branch Setup & Environment Preparation' };
       const branchName = `portal/${ticketKey}`;
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 3,
+        currentPhaseName: 'Branch Setup & Environment Preparation',
+        branchName,
+        lastActivity: `Setting up feature branch ${branchName}`,
+        nextPhase: 'Phase 4: Implementation & Salesforce Deployment (Agent 2)'
+      });
+
       console.log(`[ORCHESTRATOR] Switching to branch ${branchName}...`);
       try {
         execSync(`git checkout -B ${branchName}`, { stdio: 'inherit' });
@@ -188,6 +231,13 @@ export async function executeLoopForTicket(ticketKey) {
 
       // Phase 4: Implementation & Salesforce Deployment (Agent 2)
       currentPhase = { number: 4, name: 'Implementation & Salesforce Deployment (Agent 2)' };
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 4,
+        currentPhaseName: 'Implementation & Salesforce Deployment (Agent 2)',
+        lastActivity: 'Agent 2 is creating metadata XML and deploying to time-sheet org',
+        nextPhase: 'Phase 5: Automated PR Review (Agent 4)'
+      });
+
       console.log(`\n[ORCHESTRATOR] Spawning Agent 2 (Builder)...`);
       const agent2Prompt = buildAgent2Prompt({ ticketKey, summary });
       const agent2Result = await runAgent(agent2Prompt, false);
@@ -211,6 +261,11 @@ export async function executeLoopForTicket(ticketKey) {
       }
 
       console.log(`[ORCHESTRATOR] Detected PR URL: ${prUrl || 'None'}`);
+      updateTicketState(ticketKey, {
+        prUrl,
+        lastActivity: `Pull Request opened: ${prUrl || 'branch ' + branchName}`,
+        nextPhase: 'Phase 5: Automated PR Review (Agent 4)'
+      });
 
       await notifyPhase(CHANNEL_ID, threadTs, {
         phaseNumber: 4,
@@ -224,6 +279,12 @@ export async function executeLoopForTicket(ticketKey) {
 
       // Phase 5: Automated PR Review (Agent 4)
       currentPhase = { number: 5, name: 'Automated PR Review (Agent 4)' };
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 5,
+        currentPhaseName: 'Automated PR Review (Agent 4)',
+        lastActivity: 'Agent 4 is reviewing PR diff against acceptance criteria',
+        nextPhase: 'Phase 6: JIRA Finalization'
+      });
       await runPrReviewWorkflow({
         ticketKey,
         summary,
@@ -235,6 +296,13 @@ export async function executeLoopForTicket(ticketKey) {
 
       // Phase 6: JIRA Finalization & Transition to In Review
       currentPhase = { number: 6, name: 'JIRA Finalization' };
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 6,
+        currentPhaseName: 'JIRA Finalization',
+        jiraStatus: 'In Review',
+        lastActivity: 'Transitioning JIRA ticket to In Review',
+        nextPhase: 'Phase 7: QA Validation & Acceptance Testing (Agent 3)'
+      });
       const jiraComment = prUrl
         ? `Automated delivery completed and PR approved by Review Agent.\n\nPull Request: ${prUrl}\n\nBranch: ${branchName}`
         : `Automated delivery completed for branch ${branchName}.`;
@@ -274,12 +342,26 @@ export async function executeLoopForTicket(ticketKey) {
 
       // Phase 7: QA Validation & Acceptance Testing (Agent 3)
       currentPhase = { number: 7, name: 'QA Validation & Acceptance Testing (Agent 3)' };
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 7,
+        currentPhaseName: 'QA Validation & Acceptance Testing (Agent 3)',
+        lastActivity: 'Agent 3 is verifying schema and acceptance criteria in target org',
+        nextPhase: 'Done'
+      });
       await runTesterWorkflow({
         ticketKey,
         summary,
         branchName,
         prUrl,
         threadTs
+      });
+
+      updateTicketState(ticketKey, {
+        currentPhaseNumber: 7,
+        currentPhaseName: 'QA Testing Passed',
+        lastActivity: 'Feature delivered, reviewed, and tested end-to-end!',
+        jiraStatus: 'Done',
+        isRunning: false
       });
 
       console.log(`\n[ORCHESTRATOR] Ticket ${ticketKey} successfully delivered, reviewed, and tested end-to-end!\n`);
@@ -313,6 +395,7 @@ export async function executeLoopForTicket(ticketKey) {
     }
   } finally {
     isProcessing = false;
+    setActiveTicketKey(null);
   }
 }
 

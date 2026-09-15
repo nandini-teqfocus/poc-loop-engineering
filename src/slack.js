@@ -2,12 +2,15 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { App } from '@slack/bolt';
+import { generateStatusAnswer, getActiveTicketKey } from './statusResponder.js';
 
 let slackApp = null;
 let activeResolvers = new Map(); // threadTs -> resolve function
 
 // In-memory mapping: ticketKey -> parent threadTs
 const ticketThreads = new Map();
+// In-memory reverse mapping: threadTs -> ticketKey
+const threadToTickets = new Map();
 
 // In-memory set to prevent duplicate stage transitions
 const sentStageTransitions = new Set();
@@ -19,8 +22,24 @@ const sentStageTransitions = new Set();
  */
 export function registerTicketThread(ticketKey, threadTs) {
   if (ticketKey && threadTs) {
-    ticketThreads.set(ticketKey.toUpperCase(), threadTs);
+    const key = ticketKey.toUpperCase();
+    ticketThreads.set(key, threadTs);
+    threadToTickets.set(threadTs, key);
   }
+}
+
+/**
+ * Retrieves the JIRA ticket key associated with a given Slack thread timestamp
+ * @param {string} threadTs
+ * @returns {string|null}
+ */
+export function getTicketForThread(threadTs) {
+  if (!threadTs) return null;
+  if (threadToTickets.has(threadTs)) return threadToTickets.get(threadTs);
+  for (const [key, ts] of ticketThreads.entries()) {
+    if (ts === threadTs) return key;
+  }
+  return null;
 }
 
 /**
@@ -139,29 +158,91 @@ export async function initSlack() {
     socketMode: true
   });
 
+  // Deduplicate processed messages to prevent duplicate replies across message & app_mention events
+  const handledMessages = new Set();
+
+  async function handleIncomingThreadQuestion({ channel, threadTs, text, user }) {
+    if (!text || typeof text !== 'string') return;
+
+    // 1. Check if waiting for developer clarification on an active HITL question
+    const resolver = activeResolvers.get(threadTs);
+    if (resolver) {
+      console.log(`[SLACK] Received clarification reply in thread ${threadTs}: "${text}"`);
+      activeResolvers.delete(threadTs);
+      resolver(text);
+      return;
+    }
+
+    // 2. Otherwise, this is a developer asking a question about progress or status in the thread!
+    console.log(`[SLACK] Received user question in thread ${threadTs} from ${user || 'user'}: "${text}"`);
+
+    let ticketKey = getTicketForThread(threadTs);
+    if (!ticketKey) {
+      const match = text.match(/\b([A-Z][A-Z0-9]+-\d+)\b/i);
+      if (match) ticketKey = match[1].toUpperCase();
+    }
+    if (!ticketKey) {
+      ticketKey = getActiveTicketKey();
+    }
+
+    try {
+      const answer = await generateStatusAnswer({
+        ticketKey,
+        question: text,
+        user
+      });
+
+      await postSlackMessage(channel, answer.text, threadTs, answer.buttonOptions);
+      console.log(`[SLACK] Sent status answer to thread ${threadTs} for ticket ${ticketKey || 'N/A'}`);
+    } catch (err) {
+      console.error(`[SLACK ERROR] Failed to generate status answer:`, err);
+      await postSlackMessage(
+        channel,
+        `⚠️ Sorry, I encountered an issue retrieving the live status: ${err.message}`,
+        threadTs
+      );
+    }
+  }
+
   // Listen for thread replies via message events
   slackApp.message(async ({ message }) => {
     // Only care about messages with thread_ts, from non-bots
     if (message.thread_ts && !message.bot_id && !message.subtype) {
-      const resolver = activeResolvers.get(message.thread_ts);
-      if (resolver) {
-        console.log(`[SLACK] Received reply in thread ${message.thread_ts}: "${message.text}"`);
-        activeResolvers.delete(message.thread_ts);
-        resolver(message.text);
+      const msgId = message.client_msg_id || message.ts;
+      if (handledMessages.has(msgId)) return;
+      handledMessages.add(msgId);
+      if (handledMessages.size > 1000) {
+        const first = handledMessages.values().next().value;
+        handledMessages.delete(first);
       }
+
+      await handleIncomingThreadQuestion({
+        channel: message.channel,
+        threadTs: message.thread_ts,
+        text: message.text,
+        user: message.user
+      });
     }
   });
 
   // Listen for app_mention events (works even without channels:history)
   slackApp.event('app_mention', async ({ event }) => {
     const threadTs = event.thread_ts || event.ts;
-    console.log(`[SLACK] Received app_mention in thread ${threadTs}: "${event.text}"`);
-    const resolver = activeResolvers.get(threadTs);
-    if (resolver) {
-      console.log(`[SLACK] Resolving active question with mention text: "${event.text}"`);
-      activeResolvers.delete(threadTs);
-      resolver(event.text);
+    const msgId = event.client_msg_id || event.ts;
+    if (handledMessages.has(msgId)) return;
+    handledMessages.add(msgId);
+    if (handledMessages.size > 1000) {
+      const first = handledMessages.values().next().value;
+      handledMessages.delete(first);
     }
+
+    console.log(`[SLACK] Received app_mention in thread ${threadTs}: "${event.text}"`);
+    await handleIncomingThreadQuestion({
+      channel: event.channel,
+      threadTs,
+      text: event.text,
+      user: event.user
+    });
   });
 
   await slackApp.start();
