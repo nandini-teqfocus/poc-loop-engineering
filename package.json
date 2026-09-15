@@ -1,18 +1,28 @@
 {
   "name": "poc-loop-engineering",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Autonomous multi-agent software delivery pipeline for Salesforce development with JIRA, Slack, and GitHub integration",
+  "main": "orchestrator.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node orchestrator.js",
+    "test": "node scripts/test-connections.js",
+    "test:connections": "node scripts/test-connections.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nandini-teqfocus/poc-loop-engineering.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "salesforce",
+    "loop-engineering",
+    "autonomous-agents",
+    "jira",
+    "slack",
+    "github-actions",
+    "antigravity"
+  ],
+  "author": "nandini-teqfocus",
+  "license": "MIT",
   "type": "module",
   "bugs": {
     "url": "https://github.com/nandini-teqfocus/poc-loop-engineering/issues"

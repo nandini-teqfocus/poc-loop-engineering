@@ -1148,8 +1148,10 @@ async function start() {
     console.log(`======================================================\n`);
   });
 
-  // CLI argument support (e.g. node orchestrator.js --ticket SCRUM-1)
-  const ticketArgIdx = process.argv.indexOf('--ticket');
+  // CLI argument support (e.g. node orchestrator.js --ticket SCRUM-1 or --key SCRUM-1)
+  const ticketArgIdx = process.argv.indexOf('--ticket') !== -1
+    ? process.argv.indexOf('--ticket')
+    : process.argv.indexOf('--key');
   if (ticketArgIdx !== -1 && process.argv[ticketArgIdx + 1]) {
     const ticketKey = process.argv[ticketArgIdx + 1];
     executeLoopForTicket(ticketKey);
