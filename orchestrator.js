@@ -6,11 +6,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl, searchJiraIssues } from './src/jira.js';
-import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket } from './src/slack.js';
+import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket, postSlackSwitchControl } from './src/slack.js';
 import { runAgent, parseNeedsInput, parseTestResult, parseReviewResult } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt, buildAgent4ReviewPrompt, buildAgent2PrReviewFixPrompt } from './src/prompts.js';
 import { updateTicketState, setActiveTicketKey } from './src/statusResponder.js';
 import { isPrReviewAgentEnabled, submitPrReview, auditPullRequest } from './src/prReviewer.js';
+import { getSwitchState, toggleSwitch, setSwitchState, isGitHubActionActive, isLocalAgentActive } from './src/switchManager.js';
 
 const app = express();
 app.use(express.json());
@@ -278,32 +279,33 @@ export async function executeLoopForTicket(ticketKey) {
         githubUrl: prUrl
       });
 
-      // Phase 5: Automated PR Review (Agent 4)
-      currentPhase = { number: 5, name: 'Automated PR Review (Agent 4)' };
-      if (!isPrReviewAgentEnabled()) {
-        console.log(`[ORCHESTRATOR] PR Review Agent is DISABLED via ENABLE_PR_REVIEW_AGENT switch. Skipping Phase 5 for ${ticketKey}.`);
+      // Phase 5: Automated PR Review (Switch Mode: GitHub Actions vs Local Agent)
+      currentPhase = { number: 5, name: 'Automated PR Review' };
+      if (isGitHubActionActive()) {
+        console.log(`[ORCHESTRATOR] 🚀 GitHub Actions Mode is ACTIVE for ${ticketKey}. PR review is executed in GitHub Actions CI/CD (Local tokens saved).`);
         updateTicketState(ticketKey, {
           currentPhaseNumber: 5,
-          currentPhaseName: 'Automated PR Review (Agent 4) [SKIPPED]',
-          lastActivity: 'PR Review Agent disabled via switch (ENABLE_PR_REVIEW_AGENT=false)',
+          currentPhaseName: 'Automated PR Review (GitHub Actions Active)',
+          lastActivity: 'PR Review workflow is active in GitHub Actions CI/CD',
           nextPhase: 'Phase 6: JIRA Finalization'
         });
         if (CHANNEL_ID && threadTs) {
           await notifyPhase(CHANNEL_ID, threadTs, {
             phaseNumber: 5,
-            phaseName: 'Automated PR Review (Agent 4)',
-            status: 'Skipped',
-            summary: `PR Review Agent is currently *disabled* via \`ENABLE_PR_REVIEW_AGENT=false\` switch. Bypassing Phase 5 review and proceeding directly to JIRA Finalization & QA Testing.`,
+            phaseName: 'Automated PR Review (GitHub Actions)',
+            status: 'Running in GitHub Actions',
+            summary: `*GitHub Actions Mode is ACTIVE.* The PR Review Agent runs directly in GitHub Actions CI/CD on PR events to optimize token usage. Local Agent 4 is on standby.`,
             nextPhase: 'Phase 6: JIRA Finalization',
             jiraUrl,
             githubUrl: prUrl
           });
         }
       } else {
+        console.log(`[ORCHESTRATOR] 💻 Local Agent Mode is ACTIVE (GitHub Action is disabled). Spawning Agent 4 locally for ${ticketKey}.`);
         updateTicketState(ticketKey, {
           currentPhaseNumber: 5,
-          currentPhaseName: 'Automated PR Review (Agent 4)',
-          lastActivity: 'Agent 4 is reviewing PR diff against acceptance criteria',
+          currentPhaseName: 'Automated PR Review (Agent 4 - Local)',
+          lastActivity: 'Agent 4 is reviewing PR diff locally against acceptance criteria',
           nextPhase: 'Phase 6: JIRA Finalization'
         });
         await runPrReviewWorkflow({
@@ -1228,6 +1230,397 @@ app.post('/trigger-merge/:key', async (req, res) => {
   const prNumber = req.body?.prNumber || 1;
   res.send({ triggered: true, ticket: key, workflow: 'pr_merged' });
   await handlePrMerge({ ticketKey: key, prUrl, prNumber });
+});
+
+/**
+ * HTML Template Renderer for Web Dashboard
+ */
+function renderDashboardHtml(initialState) {
+  const isGHA = initialState.githubActionsActive;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POC Loop Engineering — Agent Switch Control Panel</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #3b82f6;
+      --success: #10b981;
+      --accent: #8b5cf6;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body {
+      background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #0f172a 75%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 760px;
+      width: 100%;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+    .header h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+    .header p {
+      color: var(--text-muted);
+      font-size: 15px;
+    }
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 32px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      margin-bottom: 24px;
+    }
+    .switch-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      padding: 24px 0;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      border-radius: 9999px;
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: all 0.3s ease;
+    }
+    .badge.gha {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .badge.local {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+    }
+    .pulse-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 10px currentColor;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    .toggle-btn {
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      color: white;
+      border: none;
+      padding: 18px 42px;
+      font-size: 17px;
+      font-weight: 700;
+      border-radius: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 10px 20px -5px rgba(37, 99, 235, 0.4);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .toggle-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 15px 25px -5px rgba(37, 99, 235, 0.6);
+    }
+    .toggle-btn:active {
+      transform: translateY(1px);
+    }
+    .toggle-btn.btn-local {
+      background: linear-gradient(135deg, #059669, #0d9488);
+      box-shadow: 0 10px 20px -5px rgba(16, 185, 129, 0.4);
+    }
+    .toggle-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .description-box {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-muted);
+      width: 100%;
+      margin-top: 10px;
+    }
+    .description-box strong {
+      color: var(--text);
+    }
+    .action-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 20px;
+      width: 100%;
+    }
+    .secondary-btn {
+      flex: 1;
+      background: rgba(51, 65, 85, 0.6);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+      text-decoration: none;
+    }
+    .secondary-btn:hover {
+      background: rgba(71, 85, 105, 0.8);
+      border-color: #475569;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .info-card {
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .info-card h4 {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .info-card p {
+      font-size: 13px;
+      line-height: 1.5;
+      color: #cbd5e1;
+    }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      border: 1px solid #475569;
+      color: #f8fafc;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.3s ease;
+      pointer-events: none;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🎛️ Agent Execution Control Panel</h1>
+      <p>POC Loop Engineering &bull; Dynamic PR Reviewer Engine Switch</p>
+    </div>
+
+    <div class="card">
+      <div class="switch-section">
+        <div id="badge" class="badge ${isGHA ? 'gha' : 'local'}">
+          <span class="pulse-dot"></span>
+          <span id="badge-text">${isGHA ? '🚀 GitHub Actions (Active)' : '💻 Local Agent (Active)'}</span>
+        </div>
+
+        <button id="toggleBtn" class="toggle-btn ${isGHA ? '' : 'btn-local'}" onclick="handleToggle()">
+          <span id="btnIcon">${isGHA ? '💻' : '🚀'}</span>
+          <span id="btnText">${isGHA ? 'Switch to Local Agent' : 'Switch to GitHub Actions'}</span>
+        </button>
+
+        <div class="description-box" id="descBox">
+          ${isGHA
+            ? '<strong>GitHub Actions Mode:</strong> The PR Review workflow is <strong>ACTIVE</strong> in GitHub Actions. PR code audits run in GitHub cloud runners on PR events, reducing local token usage.'
+            : '<strong>Local Agent Mode:</strong> GitHub Actions workflow is <strong>DISABLED</strong>. Agent 4 runs locally in Phase 5 of the orchestrator to audit the PR diff and enforce acceptance criteria.'}
+        </div>
+
+        <div class="action-row">
+          <button class="secondary-btn" onclick="postToSlack()">
+            💬 Send Switch Button to Slack
+          </button>
+          <a class="secondary-btn" href="https://github.com/nandini-teqfocus/poc-loop-engineering/actions" target="_blank">
+            🐙 GitHub Actions Tab
+          </a>
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-card">
+          <h4>🚀 GitHub Actions Mode</h4>
+          <p>Workflow <code>pr-review.yml</code> is enabled. Triggers automatically on PR events. Local orchestrator saves tokens.</p>
+        </div>
+        <div class="info-card">
+          <h4>💻 Local Agent Mode</h4>
+          <p>Workflow is disabled via GitHub API. Agent 4 runs locally in Phase 5 to audit code diffs and request fixes.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.className = 'toast show';
+      setTimeout(() => { toast.className = 'toast'; }, 3000);
+    }
+
+    async function handleToggle() {
+      const btn = document.getElementById('toggleBtn');
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+
+      try {
+        const res = await fetch('/api/switch/toggle', { method: 'POST' });
+        const data = await res.json();
+        updateUI(data.githubActionsActive);
+        showToast('Switched to ' + (data.githubActionsActive ? 'GitHub Actions Mode 🚀' : 'Local Agent Mode 💻'));
+      } catch (e) {
+        showToast('Error toggling switch: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+      }
+    }
+
+    async function postToSlack() {
+      try {
+        const res = await fetch('/api/switch/post-to-slack', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✅ Sent interactive switch card to Slack channel!');
+        } else {
+          showToast('Error: ' + (data.error || 'Failed to post'));
+        }
+      } catch (e) {
+        showToast('Error posting to Slack: ' + e.message);
+      }
+    }
+
+    function updateUI(isGHA) {
+      const badge = document.getElementById('badge');
+      const badgeText = document.getElementById('badge-text');
+      const btn = document.getElementById('toggleBtn');
+      const btnIcon = document.getElementById('btnIcon');
+      const btnText = document.getElementById('btnText');
+      const descBox = document.getElementById('descBox');
+
+      if (isGHA) {
+        badge.className = 'badge gha';
+        badgeText.innerText = '🚀 GitHub Actions (Active)';
+        btn.className = 'toggle-btn';
+        btnIcon.innerText = '💻';
+        btnText.innerText = 'Switch to Local Agent';
+        descBox.innerHTML = '<strong>GitHub Actions Mode:</strong> The PR Review workflow is <strong>ACTIVE</strong> in GitHub Actions. PR code audits run in GitHub cloud runners on PR events, reducing local token usage.';
+      } else {
+        badge.className = 'badge local';
+        badgeText.innerText = '💻 Local Agent (Active)';
+        btn.className = 'toggle-btn btn-local';
+        btnIcon.innerText = '🚀';
+        btnText.innerText = 'Switch to GitHub Actions';
+        descBox.innerHTML = '<strong>Local Agent Mode:</strong> GitHub Actions workflow is <strong>DISABLED</strong>. Agent 4 runs locally in Phase 5 of the orchestrator to audit the PR diff and enforce acceptance criteria.';
+      }
+    }
+
+    // Auto-sync every 3 seconds
+    setInterval(async () => {
+      try {
+        const res = await fetch('/api/switch');
+        const data = await res.json();
+        updateUI(data.githubActionsActive);
+      } catch (e) {}
+    }, 3000);
+  </script>
+</body>
+</html>`;
+}
+
+// Web UI & Switch Control API Routes
+app.get(['/', '/switch'], (req, res) => {
+  const state = getSwitchState();
+  res.send(renderDashboardHtml(state));
+});
+
+app.get('/api/switch', (req, res) => {
+  res.json(getSwitchState());
+});
+
+app.post('/api/switch/toggle', async (req, res) => {
+  const newState = toggleSwitch('Web Dashboard Button');
+  if (CHANNEL_ID) {
+    try {
+      const modeText = newState.githubActionsActive
+        ? '🚀 *GitHub Actions (Active)* — PR reviews executed in CI/CD (local tokens saved).'
+        : '💻 *Local Agent (Active)* — GitHub Action disabled; Agent 4 runs locally.';
+      await postSlackMessage(CHANNEL_ID, `🎛️ *PR Review Switch Toggled via Web UI:*\n• Active Mode: ${modeText}`);
+    } catch (e) {}
+  }
+  res.json(newState);
+});
+
+app.post('/api/switch/set', async (req, res) => {
+  const { active } = req.body;
+  const newState = setSwitchState(Boolean(active), 'Web API');
+  res.json(newState);
+});
+
+app.post('/api/switch/post-to-slack', async (req, res) => {
+  if (!CHANNEL_ID) {
+    return res.status(400).json({ error: 'SLACK_CHANNEL_ID not configured' });
+  }
+  try {
+    const ts = await postSlackSwitchControl(CHANNEL_ID);
+    res.json({ success: true, ts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Start Server & Slack Listener

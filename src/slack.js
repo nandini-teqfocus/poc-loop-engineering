@@ -4,6 +4,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { App } from '@slack/bolt';
 import { generateStatusAnswer, getActiveTicketKey } from './statusResponder.js';
+import { getSwitchState, toggleSwitch, setSwitchState, isGitHubActionActive } from './switchManager.js';
 
 let slackApp = null;
 let activeResolvers = new Map(); // threadTs -> resolve function
@@ -171,6 +172,30 @@ export async function initSlack() {
     socketMode: true
   });
 
+  // Interactive Button Handler: Toggle PR Review Mode
+  slackApp.action('toggle_pr_switch', async ({ ack, body, client }) => {
+    await ack();
+    const userLabel = body.user?.username || body.user?.name || 'Slack user';
+    const newState = toggleSwitch(`Slack user ${userLabel}`);
+    console.log(`[SLACK] User ${userLabel} clicked toggle switch. New mode: ${newState.mode}`);
+
+    const blocks = buildSlackSwitchBlocks(newState);
+    const text = newState.githubActionsActive
+      ? '🚀 PR Review Switch: GitHub Actions is now ACTIVE'
+      : '💻 PR Review Switch: Local Agent is now ACTIVE';
+
+    try {
+      await client.chat.update({
+        channel: body.channel.id,
+        ts: body.message.ts,
+        text,
+        blocks
+      });
+    } catch (err) {
+      console.error('[SLACK] Failed to update switch message:', err.message);
+    }
+  });
+
   // Deduplicate processed messages to prevent duplicate replies across message & app_mention events
   const handledMessages = new Set();
 
@@ -186,7 +211,14 @@ export async function initSlack() {
       return;
     }
 
-    // 2. Otherwise, this is a developer asking a question about progress or status in the thread!
+    // 2. Check if user is asking to toggle/switch the PR Review Agent
+    if (text.match(/\b(toggle|switch|agent switch|pr switch|agent mode|pr mode)\b/i)) {
+      console.log(`[SLACK] Received switch command in thread ${threadTs}: "${text}"`);
+      await postSlackSwitchControl(channel, threadTs);
+      return;
+    }
+
+    // 3. Otherwise, this is a developer asking a question about progress or status in the thread!
     console.log(`[SLACK] Received user question in thread ${threadTs} from ${user || 'user'}: "${text}"`);
 
     let ticketKey = getTicketForThread(threadTs);
@@ -217,18 +249,26 @@ export async function initSlack() {
     }
   }
 
-  // Listen for thread replies via message events
+  // Listen for thread replies or switch commands via message events
   slackApp.message(async ({ message }) => {
-    // Only care about messages with thread_ts, from non-bots
-    if (message.thread_ts && !message.bot_id && !message.subtype) {
-      const msgId = message.client_msg_id || message.ts;
-      if (handledMessages.has(msgId)) return;
-      handledMessages.add(msgId);
-      if (handledMessages.size > 1000) {
-        const first = handledMessages.values().next().value;
-        handledMessages.delete(first);
-      }
+    if (message.bot_id || message.subtype) return;
 
+    const msgId = message.client_msg_id || message.ts;
+    if (handledMessages.has(msgId)) return;
+    handledMessages.add(msgId);
+    if (handledMessages.size > 1000) {
+      const first = handledMessages.values().next().value;
+      handledMessages.delete(first);
+    }
+
+    // Check top-level message in channel for switch command
+    if (!message.thread_ts && message.text && message.text.match(/\b(switch|toggle|agent switch|pr switch|agent mode)\b/i)) {
+      console.log(`[SLACK] Received top-level switch command: "${message.text}"`);
+      await postSlackSwitchControl(message.channel);
+      return;
+    }
+
+    if (message.thread_ts) {
       await handleIncomingThreadQuestion({
         channel: message.channel,
         threadTs: message.thread_ts,
@@ -261,6 +301,82 @@ export async function initSlack() {
   await slackApp.start();
   console.log('[SLACK] Socket Mode client connected and listening.');
   return slackApp;
+}
+
+/**
+ * Builds the Slack Block Kit card containing the interactive toggle button.
+ * @param {Object} state 
+ * @returns {Array} Slack blocks
+ */
+export function buildSlackSwitchBlocks(state) {
+  const isGHA = state.githubActionsActive;
+  return [
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: '🎛️ PR Review Execution Switch',
+        emoji: true
+      }
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: isGHA
+          ? '• *Active Engine:* 🚀 *GitHub Actions (Active)*\n• *GitHub Workflow (`pr-review.yml`):* `ENABLED`\n• *Local Agent 4:* Standby (Token usage saved in cloud CI/CD)\n• *Behavior:* When PR is opened/updated, GitHub Actions executes review.'
+          : '• *Active Engine:* 💻 *Local Agent (Active)*\n• *GitHub Workflow (`pr-review.yml`):* `DISABLED`\n• *Local Agent 4:* **ACTIVE**\n• *Behavior:* Agent 4 will actively audit PRs locally during ticket runs.'
+      }
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: isGHA ? '💻 Switch to Local Agent' : '🚀 Switch to GitHub Actions',
+            emoji: true
+          },
+          style: isGHA ? 'danger' : 'primary',
+          action_id: 'toggle_pr_switch',
+          value: isGHA ? 'disable_gha' : 'enable_gha'
+        }
+      ]
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `Current Mode: *${isGHA ? 'GitHub Actions' : 'Local Agent'}* | Last updated: \`${state.lastUpdated}\` via *${state.updatedBy}*`
+        }
+      ]
+    }
+  ];
+}
+
+/**
+ * Posts the interactive switch control card with button to a Slack channel or thread.
+ * @param {string} channel 
+ * @param {string|null} [threadTs=null] 
+ * @returns {Promise<string>}
+ */
+export async function postSlackSwitchControl(channel, threadTs = null) {
+  const app = await initSlack();
+  const state = getSwitchState();
+  const blocks = buildSlackSwitchBlocks(state);
+  const text = state.githubActionsActive
+    ? '🚀 PR Review Switch: GitHub Actions is ACTIVE'
+    : '💻 PR Review Switch: Local Agent is ACTIVE';
+
+  const res = await app.client.chat.postMessage({
+    channel,
+    text,
+    blocks,
+    ...(threadTs ? { thread_ts: threadTs } : {})
+  });
+  return res.ts;
 }
 
 /**

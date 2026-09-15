@@ -294,21 +294,36 @@ To optimize model token usage and decouple PR review from the long-running local
   - Automatically posts real-time review verdict cards into the corresponding Slack thread.
   - Generates rich GitHub Actions Step Summaries for pull request reviewers.
 
-### 2. Configurable Switch (`ENABLE_PR_REVIEW_AGENT`)
-The PR Review Agent execution is governed by a unified ON/OFF switch across both local and CI/CD environments:
+### 2. Dual-Engine Switch & Interactive Buttons
+The pipeline supports dynamic toggling between **GitHub Actions Mode** and **Local Agent Mode** with live synchronization across GitHub, the orchestrator, and Slack:
 
-| Switch Value | Local Orchestrator Behavior | GitHub Actions Workflow Behavior |
-|---|---|---|
-| **`true` (ON)** | Phase 5 executes multi-iteration automated code & standards review, posts reviews to GitHub, and notifies Slack before advancing to Phase 6. | Runs code audit, submits GitHub PR approval/change request, posts review card to Slack, and passes/fails check run. |
-| **`false` (OFF)** | Phase 5 is cleanly bypassed. The orchestrator logs the skip, sends a notification to Slack, and advances directly to Phase 6 (JIRA Finalization) and Phase 7 (QA Validation). | The action detects the switch, logs `PR Review Agent is currently disabled`, writes a clean skip summary, and exits immediately with code `0`. |
+| Switch State | GitHub Action (`pr-review.yml`) | Local Orchestrator (Phase 5) | Best For |
+|---|---|---|---|
+| **`🚀 GitHub Actions (Active)`** | **ENABLED** on GitHub. Runs PR code audits automatically on PR events. | **Bypassed / Delegated**. Phase 5 acknowledges cloud CI/CD execution and proceeds. | Standard development, saving local tokens, parallel CI review. |
+| **`💻 Local Agent (Active)`** | **DISABLED** on GitHub (`gh workflow disable`). Will not run in CI/CD. | **ACTIVE**. Local Agent 4 executes multi-iteration review, commits fixes, and approves PR. | Offline development, local prompt debugging, or self-contained runs. |
 
-**How to Configure:**
-- **Local Environment:** Set `ENABLE_PR_REVIEW_AGENT=true` (or `false`) in your `.env` file or shell environment:
-  ```bash
-  # In .env
-  ENABLE_PR_REVIEW_AGENT=false
-  ```
-- **GitHub Actions:** Set the repository variable `vars.ENABLE_PR_REVIEW_AGENT` in GitHub repository settings (**Settings ➔ Secrets and variables ➔ Actions ➔ Variables**), or pass `enable_agent: false` when triggering the workflow manually.
+#### Ways to Toggle the Switch:
+
+1. **Interactive Web Dashboard Button (Recommended)**
+   Open `http://localhost:3000` (or your Cloudflare tunnel URL) in your browser:
+   - Features a live glowing status badge and an interactive toggle button.
+   - Instantly enables/disables the GitHub workflow via the GitHub API.
+   - Includes a **"💬 Send Switch Button to Slack"** button to share the controller with the team.
+
+2. **Interactive Slack Button**
+   - Click the **`[ 💻 Switch to Local Agent ]`** or **`[ 🚀 Switch to GitHub Actions ]`** button directly in any Slack notification card.
+   - Or type `switch`, `toggle`, or `pr mode` in Slack to have the bot drop the interactive control card into the channel.
+
+3. **Terminal CLI Command**
+   ```bash
+   # Toggle between modes
+   node scripts/toggle-switch.js
+
+   # Force specific mode
+   node scripts/toggle-switch.js --on     # Enable GitHub Actions (Active)
+   node scripts/toggle-switch.js --off    # Enable Local Agent (Active)
+   node scripts/toggle-switch.js --status # View current active engine
+   ```
 
 ---
 

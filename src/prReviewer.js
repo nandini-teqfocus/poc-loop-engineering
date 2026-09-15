@@ -3,17 +3,20 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { getJiraIssue, getJiraTicketUrl, extractTextFromAdf } from './jira.js';
 import { postSlackMessage, notifyPhase, getTicketThread, getPrUrlForTicket } from './slack.js';
+import { isGitHubActionActive } from './switchManager.js';
 
 /**
  * Checks if the PR Review Agent is enabled via configuration switch.
- * Checks ENABLE_PR_REVIEW_AGENT, PR_REVIEW_AGENT_ENABLED, or PR_AGENT_ENABLED.
+ * Checks ENABLE_PR_REVIEW_AGENT, PR_REVIEW_AGENT_ENABLED, or switch state file.
  * Defaults to true.
  * @returns {boolean}
  */
 export function isPrReviewAgentEnabled() {
-  const val = process.env.ENABLE_PR_REVIEW_AGENT ?? process.env.PR_REVIEW_AGENT_ENABLED ?? process.env.PR_AGENT_ENABLED ?? 'true';
-  const clean = String(val).trim().toLowerCase();
-  return clean !== 'false' && clean !== '0' && clean !== 'off' && clean !== 'no';
+  if (process.env.ENABLE_PR_REVIEW_AGENT !== undefined) {
+    const clean = String(process.env.ENABLE_PR_REVIEW_AGENT).trim().toLowerCase();
+    return clean !== 'false' && clean !== '0' && clean !== 'off' && clean !== 'no';
+  }
+  return isGitHubActionActive();
 }
 
 /**
