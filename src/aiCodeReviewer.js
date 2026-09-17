@@ -115,15 +115,38 @@ ${diff}
 Analyze the code diff strictly for code quality, bugs, security, performance, maintainability, and best practices. Return your analysis as a valid JSON object.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: userPrompt,
-      config: {
-        systemInstruction: CODE_REVIEW_SYSTEM_PROMPT,
-        temperature: 0.1,
-        responseMimeType: 'application/json'
+    let response = null;
+    let lastError = null;
+    const maxRetries = 3;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        response = await ai.models.generateContent({
+          model,
+          contents: userPrompt,
+          config: {
+            systemInstruction: CODE_REVIEW_SYSTEM_PROMPT,
+            temperature: 0.1,
+            responseMimeType: 'application/json'
+          }
+        });
+        if (response) break;
+      } catch (callErr) {
+        lastError = callErr;
+        const isTransient = callErr.status === 503 || callErr.status === 429 || /high demand|temporar/i.test(callErr.message);
+        if (isTransient && attempt < maxRetries) {
+          const delayMs = attempt * 2000;
+          console.warn(`[AI CODE REVIEWER] Transient Gemini error (${callErr.status || '503'}), retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxRetries})...`);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        throw callErr;
       }
-    });
+    }
+
+    if (!response && lastError) {
+      throw lastError;
+    }
 
     const responseText = response.text?.trim() || '';
     if (!responseText) {
