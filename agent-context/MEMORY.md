@@ -21,5 +21,8 @@ Agent 1 reads this document FIRST before planning any new ticket.
 - Fields added in SCRUM-8:
   - `Insurance_Provider__c` (Text, 255) - Name of insurance provider (e.g., Blue Cross).
   - `Coverage_Status__c` (Picklist: Active, Expired, Pending) - Current status of insurance coverage.
+- Fields added in SCRUM-13:
+  - `External_Contract_Id__c` (Text, 50, External ID) - Stores the unique identifier of the contract from external billing platform.
 - Not yet done: Fields not yet exposed on Experience Cloud portal opportunity record pages or layouts.
+
 

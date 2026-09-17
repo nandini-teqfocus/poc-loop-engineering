@@ -23,3 +23,11 @@ Append-only ledger of completed tickets. Each entry contains the ticket key, dat
     - `force-app/main/default/objects/Opportunity/fields/Coverage_Status__c.field-meta.xml`
   - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/4
 
+- **Ticket**: SCRUM-13
+  - **Date**: 2026-09-17
+  - **Summary**: Create custom field External_Contract_Id__c (Text(50), External ID) on Opportunity object.
+  - **Artifacts**:
+    - `force-app/main/default/objects/Opportunity/fields/External_Contract_Id__c.field-meta.xml`
+  - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/7
+
+
