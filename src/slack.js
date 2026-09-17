@@ -560,6 +560,20 @@ export async function initSlack() {
       return;
     }
 
+    // Check top-level message for review commands: /review 7, !review 7, review pr 7
+    if (!message.thread_ts && message.text) {
+      const slashLikeMatch = message.text.match(/^[\/!]?(?:code-)?review(?:\s+(.*))?$/i);
+      if (slashLikeMatch) {
+        console.log(`[SLACK] Received top-level review command: "${message.text}"`);
+        await handleSlashReviewExecution({
+          commandText: slashLikeMatch[1] || '',
+          channel: message.channel,
+          user: message.user
+        });
+        return;
+      }
+    }
+
     if (message.thread_ts) {
       await handleIncomingThreadQuestion({
         channel: message.channel,
@@ -568,6 +582,110 @@ export async function initSlack() {
         user: message.user
       });
     }
+  });
+
+  // Helper for slash command & top-level review execution
+  async function handleSlashReviewExecution({ commandText = '', channel, user, threadTs = null, respond = null }) {
+    const rawText = (commandText || '').trim();
+
+    // 1. If empty or 'help', show guidance & list open PRs
+    if (!rawText || rawText.toLowerCase() === 'help') {
+      let openPrsText = '';
+      try {
+        const ghOut = execSync('gh pr list --state open --limit 5 --json number,title,headRefName', { encoding: 'utf8' }).trim();
+        const prList = JSON.parse(ghOut || '[]');
+        if (prList.length > 0) {
+          openPrsText = '\n\n📂 *Active Open Pull Requests:*\n' + prList.map(p => `• *PR #${p.number}*: ${p.title} (\`${p.headRefName}\`)`).join('\n');
+        }
+      } catch (e) {}
+
+      const helpMsg = `💡 *Usage: \`/review <PR Number | Ticket Key | PR URL>\`*\n` +
+        `• Example: \`/review 7\`\n` +
+        `• Example: \`/review SCRUM-13\`\n` +
+        `• Example: \`/review https://github.com/nandini-teqfocus/poc-loop-engineering/pull/7\`${openPrsText}`;
+
+      if (respond) {
+        await respond({ response_type: 'ephemeral', text: helpMsg });
+      } else {
+        await postSlackMessage(channel, helpMsg, threadTs);
+      }
+      return;
+    }
+
+    // 2. Parse PR number or Ticket Key
+    let prNumber = null;
+    let ticketKey = null;
+
+    const urlMatch = rawText.match(/\/pull\/(\d+)/);
+    if (urlMatch) {
+      prNumber = urlMatch[1];
+    }
+
+    if (!prNumber) {
+      const numMatch = rawText.match(/\b(?:pr\s*#?|#)?(\d+)\b/i);
+      if (numMatch && !rawText.match(/^[A-Z]+-\d+/i)) {
+        prNumber = numMatch[1];
+      }
+    }
+
+    const ticketMatch = rawText.match(/\b([A-Z][A-Z0-9]+-\d+)\b/i);
+    if (ticketMatch) {
+      ticketKey = ticketMatch[1].toUpperCase();
+      if (!prNumber) {
+        const prUrl = getPrUrlForTicket(ticketKey);
+        const m = prUrl?.match(/\/pull\/(\d+)/);
+        if (m) prNumber = m[1];
+      }
+    }
+
+    if (!prNumber) {
+      const errMsg = `⚠️ *Could not resolve a Pull Request from: "${rawText}"*.\nPlease specify a valid PR number (e.g. \`/review 7\`) or ticket key.`;
+      if (respond) {
+        await respond({ response_type: 'ephemeral', text: errMsg });
+      } else {
+        await postSlackMessage(channel, errMsg, threadTs);
+      }
+      return;
+    }
+
+    // 3. Announce in channel
+    const userMention = user ? (user.startsWith('U') || user.startsWith('W') ? `<@${user}>` : `*${user}*`) : 'team member';
+    if (respond) {
+      await respond({
+        response_type: 'in_channel',
+        text: `🚀 ${userMention} triggered Gemini AI Code Review for *PR #${prNumber}* via \`/review\`!`
+      });
+    }
+
+    // 4. Run the review
+    await executeSlackAiReview({
+      channel,
+      threadTs,
+      prNumber,
+      ticketKey,
+      user
+    });
+  }
+
+  // Register Slack Slash Commands: /review & /code-review
+  slackApp.command('/review', async ({ command, ack, respond }) => {
+    await ack();
+    await handleSlashReviewExecution({
+      commandText: command.text,
+      channel: command.channel_id,
+      user: command.user_id,
+      respond
+    });
+  });
+
+  slackApp.command('/code-review', async ({ command, ack, respond }) => {
+    await ack();
+    await handleSlashReviewExecution({
+      commandText: command.text,
+      channel: command.channel_id,
+      user: command.user_id,
+      respond
+    });
   });
 
   // Listen for app_mention events (works even without channels:history)

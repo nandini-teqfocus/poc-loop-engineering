@@ -160,6 +160,16 @@ Every Slack card features dynamic action buttons:
 ### 3. Human-In-The-Loop (HITL) Q&A
 When an agent outputs `NEEDS_INPUT: <question>`, the orchestrator pauses, notifies the Slack thread, waits for a human reply, and seamlessly resumes the agent with the provided answer.
 
+### 4. Interactive AI Review & One-Click Auto-Fix
+- **`[ 🤖 Run AI Review ]`**: Immediately reviews the PR diff with Gemini, scoring quality (`0-10`) and identifying vulnerabilities.
+- **`[ 🛠️ Apply AI Fixes ]`**: One-click autonomous self-healing. Commands Agent 2 (Builder) to apply Gemini's suggested fixes, redeploy to `time-sheet` org, commit, push, and re-review.
+
+### 5. Slash Commands & Channel Triggers
+Developers can review any Pull Request on-demand directly from Slack:
+- **Slash Commands**: `/review <PR# | Ticket Key>` or `/code-review 7`
+- **Channel Messages**: Type `!review 7`, `/review 7`, or `@bot review 7` in any channel
+- **Thread Replies**: Reply `review PR 7` or `apply fixes` in any active delivery thread.
+
 ---
 
 ## 📂 Project Directory Structure
