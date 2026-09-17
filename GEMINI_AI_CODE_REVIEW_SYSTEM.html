@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gemini AI PR Code Review & Autonomous Self-Healing Pipeline</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #0d1117;
+      --bg-surface: #161b22;
+      --bg-card: #1f242c;
+      --border: #30363d;
+      --border-accent: #388bfd;
+      --text-main: #c9d1d9;
+      --text-muted: #8b949e;
+      --text-bright: #f0f6fc;
+      --primary: #58a6ff;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --purple: #bc8cff;
+      --code-bg: #0b0e14;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      line-height: 1.65;
+      padding: 40px 20px;
+      font-size: 15px;
+    }
+
+    .container {
+      max-width: 1040px;
+      margin: 0 auto;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 48px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 28px;
+      margin-bottom: 36px;
+    }
+
+    .badge-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .badge {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid transparent;
+    }
+
+    .badge-primary { background: rgba(88, 166, 255, 0.15); color: var(--primary); border-color: rgba(88, 166, 255, 0.3); }
+    .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border-color: rgba(63, 185, 80, 0.3); }
+    .badge-purple  { background: rgba(188, 140, 255, 0.15); color: var(--purple); border-color: rgba(188, 140, 255, 0.3); }
+    .badge-warning { background: rgba(210, 153, 34, 0.15); color: var(--warning); border-color: rgba(210, 153, 34, 0.3); }
+
+    h1 {
+      font-size: 32px;
+      font-weight: 800;
+      color: var(--text-bright);
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .subtitle {
+      font-size: 18px;
+      color: var(--text-muted);
+      font-weight: 400;
+      margin-bottom: 20px;
+    }
+
+    .meta-box {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 18px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .meta-item strong {
+      color: var(--text-bright);
+    }
+
+    h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-bright);
+      margin-top: 40px;
+      margin-bottom: 18px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h3 {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-top: 24px;
+      margin-bottom: 12px;
+    }
+
+    p {
+      margin-bottom: 16px;
+    }
+
+    ul, ol {
+      margin-bottom: 16px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin-bottom: 6px;
+    }
+
+    a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    code {
+      font-family: 'Fira Code', monospace;
+      font-size: 13px;
+      background: var(--code-bg);
+      color: #ff7b72;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      margin-bottom: 20px;
+      font-family: 'Fira Code', monospace;
+      font-size: 13.5px;
+      color: var(--text-main);
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      border: none;
+      color: inherit;
+    }
+
+    .mermaid {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 20px 0;
+      display: flex;
+      justify-content: center;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      text-align: left;
+    }
+
+    th {
+      background-color: var(--bg-card);
+      color: var(--text-bright);
+      font-weight: 600;
+    }
+
+    tr:nth-child(even) {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    .toc {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 32px;
+    }
+
+    .toc h3 {
+      margin-top: 0;
+      margin-bottom: 12px;
+    }
+
+    .toc ul {
+      list-style: none;
+      padding-left: 0;
+      margin-bottom: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 8px 16px;
+    }
+
+    .toc li a {
+      color: var(--primary);
+      font-weight: 500;
+    }
+
+    .button-preview-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .btn-mock {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: default;
+      border: 1px solid transparent;
+      user-select: none;
+    }
+
+    .btn-mock-primary { background: #238636; color: #ffffff; }
+    .btn-mock-danger  { background: #da3633; color: #ffffff; }
+    .btn-mock-neutral { background: #21262d; color: var(--text-bright); border-color: var(--border); }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    footer {
+      margin-top: 50px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="badge-bar">
+        <span class="badge badge-primary">Google Gen AI SDK (^2.23.0)</span>
+        <span class="badge badge-success">gemini-flash-lite-latest (1,500 RPD Free)</span>
+        <span class="badge badge-purple">Slack Bolt Socket Mode</span>
+        <span class="badge badge-warning">Salesforce Apex & Tooling API</span>
+      </div>
+      <h1>🤖 Gemini AI PR Code Review & Autonomous Self-Healing Pipeline</h1>
+      <div class="subtitle">Complete Implementation Specification & Architectural Documentation</div>
+      <div class="meta-box">
+        <div class="meta-item"><strong>Repository:</strong> nandini-teqfocus/poc-loop-engineering</div>
+        <div class="meta-item"><strong>Target Salesforce Org:</strong> time-sheet (nandini.singh.c2d90108260b@agentforce.com)</div>
+        <div class="meta-item"><strong>Active Git Identity:</strong> nandini-teqfocus</div>
+        <div class="meta-item"><strong>Engine Latency:</strong> ~1.8s (Automated Multi-Model Failover)</div>
+      </div>
+    </header>
+
+    <div class="toc">
+      <h3>📑 Table of Contents</h3>
+      <ul>
+        <li><a href="#section-1">1. System Architecture</a></li>
+        <li><a href="#section-2">2. Implemented Core Components</a></li>
+        <li><a href="#section-3">3. Interactive Slack Experience</a></li>
+        <li><a href="#section-4">4. Autonomous Self-Healing Loop</a></li>
+        <li><a href="#section-5">5. GitHub Actions CI/CD Integration</a></li>
+        <li><a href="#section-6">6. Resilience & Multi-Model Failover</a></li>
+        <li><a href="#section-7">7. Verification Suites & Test Runners</a></li>
+        <li><a href="#section-8">8. Developer Quick-Reference Cheatsheet</a></li>
+      </ul>
+    </div>
+
+    <!-- SECTION 1 -->
+    <h2 id="section-1">1. System Architecture</h2>
+    <p>The pipeline links GitHub, Slack, Atlassian Jira, and Salesforce via an autonomous loop. Below is the active architectural topology:</p>
+
+    <div class="mermaid">
+graph TD
+    subgraph Trigger ["Triggers"]
+        PR["GitHub PR Event"]
+        SlackBtn["[🤖 Run AI Review] / [🛠️ Apply Fixes]"]
+        SlashCmd["/review &lt;PR&gt; or !review &lt;PR&gt;"]
+        OrchLoop["Orchestrator Phase 5"]
+    end
+
+    subgraph ReviewEngine ["Gemini AI Review Engine"]
+        Diff["Pull Request Diff Extractor"]
+        Filter["Source File Filter"]
+        ModelPrimary["Primary: gemini-flash-lite-latest"]
+        ModelFailover["Failover: gemini-3.5-flash-lite / gemini-flash-latest"]
+        JSONParser["Structured JSON Auditor"]
+    end
+
+    subgraph Feedback ["Dual Synchronized Feedback"]
+        GHReview["GitHub PR Summary & Line Comments"]
+        SlackCard["Slack Interactive Thread Card"]
+        AuditFile["agent-context/tickets/KEY/pr-review.md"]
+    end
+
+    subgraph Healing ["Autonomous Self-Healing Loop"]
+        FixBtn["[🛠️ Apply AI Fixes] Clicked"]
+        A2["Agent 2: Builder"]
+        SFDeploy["sf project deploy start --target-org time-sheet"]
+        GitPush["git push origin portal/KEY"]
+    end
+
+    PR --> Diff
+    SlackBtn --> Diff
+    SlashCmd --> Diff
+    OrchLoop --> Diff
+
+    Diff --> Filter --> ModelPrimary
+    ModelPrimary -.->|"429/503 Failover"| ModelFailover
+    ModelPrimary --> JSONParser
+    ModelFailover --> JSONParser
+
+    JSONParser --> GHReview
+    JSONParser --> SlackCard
+    JSONParser --> AuditFile
+
+    SlackCard -->|"Changes Requested"| FixBtn
+    FixBtn --> A2
+    A2 --> SFDeploy --> GitPush --> Diff
+    </div>
+
+    <!-- SECTION 2 -->
+    <h2 id="section-2">2. Implemented Core Components</h2>
+
+    <div class="card">
+      <h3>A. Core AI Review Engine (<code>src/aiCodeReviewer.js</code>)</h3>
+      <ul>
+        <li><strong>Strict Code-Only Scope:</strong> System prompt strictly constrains Gemini to review <em>only code diffs and modified files</em>. Ignores business logic and non-code docs.</li>
+        <li><strong>Structured JSON Output Schema:</strong>
+          <ul>
+            <li><code>verdict</code>: <code>'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENT'</code></li>
+            <li><code>overallScore</code>: Integer <code>0 - 10</code></li>
+            <li><code>summary</code>: Concise executive assessment</li>
+            <li><code>highlights</code>: Positive aspects, design strengths</li>
+            <li><code>securityAdvisories</code>: Array of <code>{ severity, title, description, cweOrOwasp }</code></li>
+            <li><code>inlineComments</code>: Array of <code>{ filePath, line, category, severity, comment, suggestedFix }</code></li>
+          </ul>
+        </li>
+        <li><strong>Salesforce & Security Rules:</strong> Enforces Apex Governor Limits (no SOQL/DML in loops), <code>with sharing</code> keywords, hardcoded secrets detection, and XML schema validity.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>B. GitHub PR Client (<code>src/githubPrClient.js</code>)</h3>
+      <ul>
+        <li><strong>Intelligent File Filtering:</strong> Strips binaries, lockfiles (<code>package-lock.json</code>), and assets to prevent context bloat and focus exclusively on executable source.</li>
+        <li><strong>Line & Hunk Mapper:</strong> Translates unified diff line positions into GitHub review comment line coordinates.</li>
+        <li><strong>Author Self-Review Fallback:</strong> Overcomes GitHub's restriction where bot tokens cannot approve their own PRs by gracefully falling back to a structured review comment badge.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>C. Main Pipeline Integration (<code>orchestrator.js</code>)</h3>
+      <ul>
+        <li>Directly wired into <strong>Phase 5 (<code>runPrReviewWorkflow</code>)</strong> of the multi-agent pipeline.</li>
+        <li>Persists persistent audit artifacts to <code>agent-context/tickets/&lt;KEY&gt;/pr-review.md</code>.</li>
+        <li>Gates progression to QA Testing until Gemini yields an <code>APPROVED</code> verdict.</li>
+      </ul>
+    </div>
+
+    <!-- SECTION 3 -->
+    <h2 id="section-3">3. Interactive Slack Experience</h2>
+    <p>Developers interact seamlessly through interactive Block Kit UI components without leaving their Slack chat:</p>
+
+    <div class="button-preview-group">
+      <span class="btn-mock btn-mock-neutral">🎯 JIRA Ticket</span>
+      <span class="btn-mock btn-mock-primary">🐙 GitHub PR</span>
+      <span class="btn-mock btn-mock-neutral">🤖 Run AI Review</span>
+      <span class="btn-mock btn-mock-danger">🛠️ Apply AI Fixes</span>
+    </div>
+
+    <h3>A. Slack Slash Commands</h3>
+    <pre><code>/review 7
+/code-review SCRUM-13
+/review https://github.com/nandini-teqfocus/poc-loop-engineering/pull/7</code></pre>
+    <p><strong>Open PR Discovery:</strong> Typing <code>/review</code> or <code>/review help</code> returns an ephemeral card listing all currently open PRs with branches and one-click commands.</p>
+
+    <h3>B. Natural Language In-Thread Commands</h3>
+    <p>Reply in any active ticket thread with:</p>
+    <ul>
+      <li><code>review PR 7</code> / <code>run AI review</code> / <code>review code</code></li>
+      <li><code>apply fixes</code> / <code>fix issues</code> / <code>auto fix</code></li>
+    </ul>
+
+    <!-- SECTION 4 -->
+    <h2 id="section-4">4. Autonomous Self-Healing Loop ("Apply AI Fixes")</h2>
+    <p>When code issues or vulnerabilities are found, clicking <strong><code>[ 🛠️ Apply AI Fixes ]</code></strong> triggers an autonomous recovery flow:</p>
+
+    <ol>
+      <li><strong>Extract Findings:</strong> Gathers recommendations and line-level fixes from the review report.</li>
+      <li><strong>Prompt Builder (Agent 2):</strong> Injects the required fixes into <code>buildAgent2PrReviewFixPrompt</code>.</li>
+      <li><strong>Target Org Validation:</strong> Agent 2 patches code and executes:
+        <pre><code>sf project deploy start --target-org time-sheet</code></pre>
+      </li>
+      <li><strong>Git Commit & Push:</strong> Commits to <code>portal/&lt;TICKET-KEY&gt;</code> and pushes directly to GitHub.</li>
+      <li><strong>Automated Re-Review:</strong> Re-runs Gemini code review to confirm that the score increases and all blockers are resolved.</li>
+    </ol>
+
+    <!-- SECTION 5 -->
+    <h2 id="section-5">5. GitHub Actions CI/CD Integration</h2>
+    <p>File: <code>.github/workflows/pr-code-review.yml</code></p>
+    <ul>
+      <li><strong>Trigger Events:</strong> <code>pull_request</code> (opened, synchronize, reopened, ready_for_review) and <code>workflow_dispatch</code>.</li>
+      <li><strong>Concurrency Management:</strong> Automatically cancels obsolete in-flight runs when new commits arrive.</li>
+      <li><strong>Job Summaries:</strong> Generates GitHub Actions Step Summaries containing review scorecards and findings.</li>
+      <li><strong>Central Switch:</strong> Dynamically toggled via <code>switchManager.js</code> to balance local agent runs and GitHub Actions CI.</li>
+    </ul>
+
+    <!-- SECTION 6 -->
+    <h2 id="section-6">6. Resilience, Quota & Multi-Model Failover</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Tier / Feature</th>
+          <th>Engine Configuration</th>
+          <th>Behavior Under Load</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Primary Model</strong></td>
+          <td><code>gemini-flash-lite-latest</code></td>
+          <td>1,500 free requests/day, ~1.8s execution speed</td>
+        </tr>
+        <tr>
+          <td><strong>Failover Models</strong></td>
+          <td><code>gemini-3.5-flash-lite</code> &rarr; <code>gemini-flash-latest</code></td>
+          <td>Automated seamless fallback if primary model is unavailable</td>
+        </tr>
+        <tr>
+          <td><strong>Quota Exhaustion (429)</strong></td>
+          <td>Instant Zero-Delay Switch</td>
+          <td>Skips failed model immediately and jumps to next free model</td>
+        </tr>
+        <tr>
+          <td><strong>Demand Spikes (503)</strong></td>
+          <td>Exponential Backoff Retry</td>
+          <td>Retries up to 3 times (1.5s, 3.0s) before failing over</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- SECTION 7 -->
+    <h2 id="section-7">7. Verification Suites & Test Runners</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Command</th>
+          <th>Script Path</th>
+          <th>Purpose & Output</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>npm run test:ai-review</code></td>
+          <td><code>scripts/test-ai-review.js</code></td>
+          <td>Runs local diagnostic suite against vulnerable Apex diff (CWE-798, loops)</td>
+        </tr>
+        <tr>
+          <td><code>npm run test:slack-review</code></td>
+          <td><code>scripts/test-slack-live-review.js</code></td>
+          <td>Publishes live review cards and interactive buttons to Slack</td>
+        </tr>
+        <tr>
+          <td><code>npm run test:auto-fix</code></td>
+          <td><code>scripts/test-auto-fix.js</code></td>
+          <td>Tests the interactive <code>[ 🛠️ Apply AI Fixes ]</code> button</td>
+        </tr>
+        <tr>
+          <td><code>npm run test:connections</code></td>
+          <td><code>scripts/test-connections.js</code></td>
+          <td>Verifies Jira, Slack, Salesforce, and Gemini API connections</td>
+        </tr>
+        <tr>
+          <td><code>CLI Review</code></td>
+          <td><code>scripts/run-ai-code-review.js --pr 7</code></td>
+          <td>Executes standalone review on any GitHub PR number</td>
+        </tr>
+        <tr>
+          <td><code>Switch Mode</code></td>
+          <td><code>scripts/toggle-switch.js --local</code></td>
+          <td>Switches between GitHub Actions mode and Local Agent mode</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- SECTION 8 -->
+    <h2 id="section-8">8. Developer Quick-Reference Cheatsheet</h2>
+
+    <h3>Starting the Full Pipeline</h3>
+    <pre><code>npm start</code></pre>
+
+    <h3>Running AI Review from Command Line</h3>
+    <pre><code>node scripts/run-ai-code-review.js --pr 7</code></pre>
+
+    <h3>Reviewing via Slack</h3>
+    <ul>
+      <li>Click <strong><code>[ 🤖 Run AI Review ]</code></strong> on any Slack card.</li>
+      <li>In any channel, type <code>/review 7</code> or <code>!review 7</code>.</li>
+      <li>In a thread, reply <code>review PR 7</code>.</li>
+    </ul>
+
+    <h3>Applying AI Fixes via Slack</h3>
+    <ul>
+      <li>Click <strong><code>[ 🛠️ Apply AI Fixes ]</code></strong> on any card with changes requested.</li>
+      <li>In the thread, reply <code>apply fixes</code>.</li>
+    </ul>
+
+    <footer>
+      <div>Autonomous Multi-Agent Loop Engineering System</div>
+      <div>Designed for <strong>time-sheet</strong> Salesforce Org &bull; nandini-teqfocus</div>
+    </footer>
+  </div>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      fontFamily: 'Inter, sans-serif'
+    });
+  </script>
+</body>
+</html>
