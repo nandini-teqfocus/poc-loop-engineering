@@ -82,7 +82,7 @@ export async function reviewPullRequestDiff({
   changedFiles = [],
   prTitle = '',
   branchName = '',
-  model = process.env.GEMINI_MODEL || 'gemini-3.6-flash'
+  model = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest'
 }) {
   if (!diff || diff.trim().length === 0) {
     return {
@@ -116,8 +116,9 @@ Analyze the code diff strictly for code quality, bugs, security, performance, ma
 
   const candidateModels = [
     model,
-    'gemini-3.5-flash',
-    'gemini-3.6-flash'
+    'gemini-flash-lite-latest',
+    'gemini-3.5-flash-lite',
+    'gemini-flash-latest'
   ].filter(Boolean);
   const uniqueModels = [...new Set(candidateModels)];
 
@@ -143,18 +144,27 @@ Analyze the code diff strictly for code quality, bugs, security, performance, ma
           if (response) break modelLoop;
         } catch (callErr) {
           lastError = callErr;
-          const isTransient = callErr.status === 503 || callErr.status === 429 || /high demand|temporar/i.test(callErr.message);
-          if (isTransient && attempt < maxRetriesPerModel) {
-            const delayMs = attempt * 2000;
-            console.warn(`[AI CODE REVIEWER] Transient error on ${currentModel} (${callErr.status || '503'}), retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxRetriesPerModel})...`);
+          const isQuotaExhausted = callErr.status === 429 || /quota|resource_exhausted/i.test(callErr.message);
+          const isDemandSpike = callErr.status === 503 || /high demand|temporar|unavailable/i.test(callErr.message);
+
+          if (isQuotaExhausted && mIdx < uniqueModels.length - 1) {
+            console.warn(`[AI CODE REVIEWER] Model ${currentModel} quota exhausted (429). Instantly switching to fallback free model ${uniqueModels[mIdx + 1]}...`);
+            break; // Skip further retries on this model and switch immediately
+          }
+
+          if (isDemandSpike && attempt < maxRetriesPerModel) {
+            const delayMs = attempt * 1500;
+            console.warn(`[AI CODE REVIEWER] Transient 503 on ${currentModel}, retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxRetriesPerModel})...`);
             await new Promise((r) => setTimeout(r, delayMs));
             continue;
           }
-          if (isTransient && mIdx < uniqueModels.length - 1) {
-            console.warn(`[AI CODE REVIEWER] Model ${currentModel} experiencing high demand (503). Switching to fallback model ${uniqueModels[mIdx + 1]}...`);
-            break; // Break inner loop to try next model
+
+          if ((isDemandSpike || isQuotaExhausted) && mIdx < uniqueModels.length - 1) {
+            console.warn(`[AI CODE REVIEWER] Switching from ${currentModel} to fallback model ${uniqueModels[mIdx + 1]}...`);
+            break;
           }
-          if (!isTransient) {
+
+          if (!isDemandSpike && !isQuotaExhausted) {
             throw callErr;
           }
         }

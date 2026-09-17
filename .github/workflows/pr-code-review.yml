@@ -12,7 +12,7 @@ on:
       model:
         description: 'Gemini Model'
         required: false
-        default: 'gemini-3.6-flash'
+        default: 'gemini-flash-lite-latest'
         type: string
 
 concurrency:
@@ -50,7 +50,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ github.event.inputs.model || vars.GEMINI_MODEL || 'gemini-3.6-flash' }}
+          GEMINI_MODEL: ${{ github.event.inputs.model || vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
           ENABLE_PR_REVIEW_AGENT: ${{ vars.ENABLE_PR_REVIEW_AGENT || 'true' }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID || vars.SLACK_CHANNEL_ID }}
