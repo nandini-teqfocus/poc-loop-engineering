@@ -202,11 +202,14 @@ poc-loop-engineering/
 │
 └── src/                      # Orchestrator modules & integration services
     ├── agentRunner.js        # Antigravity CLI process execution & output parser
+    ├── aiCodeReviewer.js     # Gemini 3.6 Flash code review engine (diff, security, limits)
+    ├── githubPrClient.js     # GitHub PR client (diff fetcher, file filter, review submitter)
     ├── jira.js               # Atlassian JIRA REST API client & ADF parser
-    ├── prReviewer.js         # PR Review Agent logic, audit checks & switch evaluator
+    ├── prReviewer.js         # Legacy PR review runner & switch evaluator
     ├── prompts.js            # Prompt templates for Agents 1, 2, 3, and 4
-    ├── slack.js              # Slack Bolt app, Socket Mode, cards & thread manager
-    └── statusResponder.js    # Thread query responder for live Slack status questions
+    ├── slack.js              # Slack Bolt app, Socket Mode, interactive cards & thread manager
+    ├── statusResponder.js    # Thread query responder for live Slack status questions
+    └── switchManager.js      # Central state switch manager for GitHub Actions & local agents
 ```
 
 ---
