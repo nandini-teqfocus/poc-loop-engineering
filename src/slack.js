@@ -8,6 +8,8 @@ import { getSwitchState, toggleSwitch, setSwitchState, isGitHubActionActive } fr
 import { getJiraTicketUrl } from './jira.js';
 import { reviewPullRequestDiff } from './aiCodeReviewer.js';
 import { getPullRequestDetails, getPullRequestDiff, submitReviewSummary } from './githubPrClient.js';
+import { runAgent } from './agentRunner.js';
+import { buildAgent2PrReviewFixPrompt } from './prompts.js';
 
 let slackApp = null;
 let activeResolvers = new Map(); // threadTs -> resolve function
@@ -257,6 +259,7 @@ export async function executeSlackAiReview({ channel, threadTs, prNumber = null,
 
     const effectiveTicket = ticketKey || getTicketForThread(threadTs);
     const jiraUrl = effectiveTicket ? getJiraTicketUrl(effectiveTicket) : null;
+    const hasFixableIssues = reviewResult.verdict !== 'APPROVED' || (reviewResult.inlineComments && reviewResult.inlineComments.length > 0);
 
     await postSlackMessage(
       channel,
@@ -265,7 +268,10 @@ export async function executeSlackAiReview({ channel, threadTs, prNumber = null,
       {
         jiraUrl,
         githubUrl: prDetails.url,
-        enableAiReviewButton: false
+        prNumber: targetPrNumber,
+        ticketKey: effectiveTicket,
+        enableAiReviewButton: false,
+        enableApplyFixesButton: hasFixableIssues
       }
     );
     console.log(`[SLACK] Completed AI Code Review for PR #${targetPrNumber} and posted card to thread ${threadTs}`);
@@ -274,6 +280,116 @@ export async function executeSlackAiReview({ channel, threadTs, prNumber = null,
     await postSlackMessage(
       channel,
       `❌ *AI Code Review failed for PR #${targetPrNumber}:* ${err.message}`,
+      threadTs
+    );
+  }
+}
+
+/**
+ * Executes automated fixes suggested by Gemini AI review (triggered via button or thread command)
+ */
+export async function executeApplyFixes({ channel, threadTs, prNumber = null, ticketKey = null, user = null }) {
+  let targetPrNumber = prNumber;
+
+  if (!targetPrNumber) {
+    const effectiveTicket = ticketKey || getTicketForThread(threadTs) || getActiveTicketKey();
+    if (effectiveTicket) {
+      const prUrl = getPrUrlForTicket(effectiveTicket);
+      const match = prUrl?.match(/\/pull\/(\d+)/);
+      if (match) targetPrNumber = match[1];
+    }
+  }
+
+  if (!targetPrNumber) {
+    await postSlackMessage(
+      channel,
+      `⚠️ *Could not detect Pull Request number.* Please specify a PR number, e.g. \`apply fixes for PR 7\`.`,
+      threadTs
+    );
+    return;
+  }
+
+  const userMention = user ? (user.startsWith('U') || user.startsWith('W') ? `<@${user}>` : `*${user}*`) : 'team member';
+  await postSlackMessage(
+    channel,
+    `🛠️ *AI Auto-Fix Triggered* for PR #${targetPrNumber} by ${userMention}!\n_Spawning Agent 2 (Builder) to apply Gemini suggestions, deploy to \`time-sheet\` org, and push updates..._`,
+    threadTs
+  );
+
+  try {
+    const prDetails = getPullRequestDetails(targetPrNumber);
+    const effectiveTicket = ticketKey || getTicketForThread(threadTs) || (prDetails.title?.match(/\b([A-Z][A-Z0-9]+-\d+)\b/i)?.[1] || 'SCRUM-TASK');
+    const branchName = prDetails.headBranch || `portal/${effectiveTicket}`;
+
+    // 1. Gather review comments/suggested fixes
+    let reviewComments = '';
+    const reportPath = path.join(process.cwd(), 'agent-context', 'tickets', effectiveTicket, 'pr-review.md');
+    if (fs.existsSync(reportPath)) {
+      reviewComments = fs.readFileSync(reportPath, 'utf8');
+    }
+
+    if (!reviewComments) {
+      const diff = getPullRequestDiff(targetPrNumber);
+      const review = await reviewPullRequestDiff({
+        diff,
+        changedFiles: prDetails.reviewableFiles,
+        prTitle: prDetails.title,
+        branchName
+      });
+      const commentsList = (review.inlineComments || []).map(c => `- [${c.severity} | ${c.category}] ${c.filePath}:${c.line} — ${c.comment}${c.suggestedFix ? ` (Fix: ${c.suggestedFix})` : ''}`).join('\n');
+      const securityList = (review.securityAdvisories || []).map(s => `- [SECURITY ${s.severity}] ${s.title}: ${s.description}`).join('\n');
+      reviewComments = [securityList, commentsList].filter(Boolean).join('\n') || review.summary;
+    }
+
+    // 2. Checkout the branch locally
+    try {
+      execSync(`git checkout ${branchName}`, { stdio: 'inherit' });
+      execSync(`git pull origin ${branchName}`, { stdio: 'inherit' });
+    } catch (e) {
+      console.warn(`[AUTO-FIX] Git checkout note: ${e.message}`);
+    }
+
+    // 3. Build fix prompt and run Agent 2
+    const fixPrompt = buildAgent2PrReviewFixPrompt({
+      ticketKey: effectiveTicket,
+      summary: prDetails.title,
+      branchName,
+      prNumber: targetPrNumber,
+      reviewComments,
+      iteration: 1
+    });
+
+    console.log(`[AUTO-FIX] Invoking Agent 2 for PR #${targetPrNumber}...`);
+    const fixResult = await runAgent(fixPrompt, false);
+    if (fixResult.code !== 0) {
+      throw new Error(`Agent 2 fix process exited with code ${fixResult.code}`);
+    }
+
+    const jiraUrl = getJiraTicketUrl(effectiveTicket);
+    await postSlackMessage(
+      channel,
+      `✅ *AI Fixes Applied & Pushed to PR #${targetPrNumber}!*
+• Builder addressed review comments and redeployed to \`time-sheet\` org.
+• Changes committed & pushed to GitHub branch \`${branchName}\`.
+_Triggering Gemini AI re-review to verify changes..._`,
+      threadTs,
+      { jiraUrl, githubUrl: prDetails.url, enableAiReviewButton: false }
+    );
+
+    // 4. Trigger automated re-review to verify the fixes
+    await executeSlackAiReview({
+      channel,
+      threadTs,
+      prNumber: targetPrNumber,
+      ticketKey: effectiveTicket,
+      user: 'AI Auto-Fix'
+    });
+
+  } catch (err) {
+    console.error('[AUTO-FIX ERROR]', err);
+    await postSlackMessage(
+      channel,
+      `❌ *AI Auto-Fix failed for PR #${targetPrNumber}:* ${err.message}`,
       threadTs
     );
   }
@@ -323,6 +439,25 @@ export async function initSlack() {
     await executeSlackAiReview({ channel, threadTs, prNumber, user });
   });
 
+  // Interactive Button Handler: Apply AI Fixes
+  slackApp.action('trigger_apply_fixes', async ({ ack, body }) => {
+    await ack();
+    let prNumber = null;
+    let ticketKey = null;
+    try {
+      const parsed = JSON.parse(body.actions?.[0]?.value || '{}');
+      prNumber = parsed.prNumber;
+      ticketKey = parsed.ticketKey;
+    } catch (e) {
+      prNumber = body.actions?.[0]?.value;
+    }
+    const channel = body.channel?.id;
+    const threadTs = body.message?.thread_ts || body.message?.ts;
+    const user = body.user?.id || body.user?.username;
+    console.log(`[SLACK] User clicked 'Apply AI Fixes' for PR #${prNumber} in thread ${threadTs}`);
+    await executeApplyFixes({ channel, threadTs, prNumber, ticketKey, user });
+  });
+
   // Deduplicate processed messages to prevent duplicate replies across message & app_mention events
   const handledMessages = new Set();
 
@@ -351,6 +486,21 @@ export async function initSlack() {
       const explicitPr = text.match(/\bpr\s*#?(\d+)\b/i)?.[1] || reviewCmdMatch[2];
       console.log(`[SLACK] Received AI review command in thread ${threadTs}: "${text}" (PR: ${explicitPr || 'auto'})`);
       await executeSlackAiReview({
+        channel,
+        threadTs,
+        prNumber: explicitPr,
+        ticketKey: getTicketForThread(threadTs),
+        user
+      });
+      return;
+    }
+
+    // 4. Check if user is asking to apply AI fixes
+    const fixCmdMatch = text.match(/\b(apply\s+fixes|fix\s+issues|apply\s+ai\s+fixes|auto\s*fix|fix\s+code|resolve\s+comments)\b/i);
+    if (fixCmdMatch) {
+      const explicitPr = text.match(/\bpr\s*#?(\d+)\b/i)?.[1];
+      console.log(`[SLACK] Received apply fixes command in thread ${threadTs}: "${text}" (PR: ${explicitPr || 'auto'})`);
+      await executeApplyFixes({
         channel,
         threadTs,
         prNumber: explicitPr,
@@ -579,6 +729,24 @@ export async function postSlackMessage(channel, text, threadTs = null, buttonOpt
           },
           action_id: 'trigger_ai_review',
           value: prNum
+        });
+      }
+    }
+
+    if (buttonOptions?.enableApplyFixesButton) {
+      const prNumMatch = buttonOptions.githubUrl.match(/\/pull\/(\d+)/);
+      const prNum = prNumMatch ? prNumMatch[1] : (buttonOptions.prNumber || '');
+      if (prNum) {
+        buttons.push({
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🛠️ Apply AI Fixes',
+            emoji: true
+          },
+          style: 'danger',
+          action_id: 'trigger_apply_fixes',
+          value: JSON.stringify({ prNumber: prNum, ticketKey: buttonOptions.ticketKey || '' })
         });
       }
     }
