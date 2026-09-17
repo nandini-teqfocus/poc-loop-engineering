@@ -5,6 +5,9 @@ import { execSync } from 'child_process';
 import { App } from '@slack/bolt';
 import { generateStatusAnswer, getActiveTicketKey } from './statusResponder.js';
 import { getSwitchState, toggleSwitch, setSwitchState, isGitHubActionActive } from './switchManager.js';
+import { getJiraTicketUrl } from './jira.js';
+import { reviewPullRequestDiff } from './aiCodeReviewer.js';
+import { getPullRequestDetails, getPullRequestDiff, submitReviewSummary } from './githubPrClient.js';
 
 let slackApp = null;
 let activeResolvers = new Map(); // threadTs -> resolve function
@@ -163,6 +166,119 @@ export async function notifyStageChange(channel, {
   return resTs;
 }
 
+/**
+ * Executes a Gemini AI code review triggered directly from Slack (button or thread query)
+ */
+export async function executeSlackAiReview({ channel, threadTs, prNumber = null, ticketKey = null, user = null }) {
+  let targetPrNumber = prNumber;
+
+  if (!targetPrNumber) {
+    const effectiveTicket = ticketKey || getTicketForThread(threadTs) || getActiveTicketKey();
+    if (effectiveTicket) {
+      const prUrl = getPrUrlForTicket(effectiveTicket);
+      const match = prUrl?.match(/\/pull\/(\d+)/);
+      if (match) targetPrNumber = match[1];
+    }
+  }
+
+  if (!targetPrNumber) {
+    await postSlackMessage(
+      channel,
+      `⚠️ *Could not detect Pull Request number.* Please specify a PR number, e.g. \`review PR 6\`.`,
+      threadTs
+    );
+    return;
+  }
+
+  const userMention = user ? `<@${user}>` : 'team member';
+  await postSlackMessage(
+    channel,
+    `🤖 *Gemini AI Code Review Triggered* for PR #${targetPrNumber} by ${userMention}!\n_Analyzing changed files & diff with Gemini 3.6 Flash..._`,
+    threadTs
+  );
+
+  try {
+    const prDetails = getPullRequestDetails(targetPrNumber);
+    const diff = getPullRequestDiff(targetPrNumber);
+
+    if (!diff || diff.trim().length === 0) {
+      await postSlackMessage(
+        channel,
+        `ℹ️ *PR #${targetPrNumber}* has no reviewable source code changes (only docs, lockfiles, or assets). Review skipped.`,
+        threadTs,
+        { githubUrl: prDetails.url }
+      );
+      return;
+    }
+
+    const reviewResult = await reviewPullRequestDiff({
+      diff,
+      changedFiles: prDetails.reviewableFiles,
+      prTitle: prDetails.title,
+      branchName: prDetails.headBranch
+    });
+
+    // Also submit review summary to GitHub PR
+    try {
+      submitReviewSummary(targetPrNumber, reviewResult, prDetails);
+    } catch (ghErr) {
+      console.warn('[SLACK AI REVIEW] GitHub review submit note:', ghErr.message);
+    }
+
+    const verdictIcon = reviewResult.verdict === 'APPROVED' ? '✅' : '⚠️';
+    const verdictBadge = reviewResult.verdict === 'APPROVED' ? 'APPROVED' : 'CHANGES REQUESTED';
+
+    let cardText = `${verdictIcon} *Gemini AI Code Review: PR #${targetPrNumber} — ${verdictBadge}*\n`;
+    cardText += `• *Code Quality Score:* \`${reviewResult.overallScore} / 10\`\n`;
+    cardText += `• *Title:* ${prDetails.title}\n`;
+    cardText += `• *Summary:* ${reviewResult.summary}\n`;
+
+    if (reviewResult.securityAdvisories && reviewResult.securityAdvisories.length > 0) {
+      cardText += `\n🛡️ *Security Advisories (${reviewResult.securityAdvisories.length}):*\n`;
+      for (const s of reviewResult.securityAdvisories) {
+        cardText += `> 🛑 *[${s.severity}] ${s.title}*: ${s.description}\n`;
+      }
+    }
+
+    if (reviewResult.highlights && reviewResult.highlights.length > 0) {
+      cardText += `\n✨ *Key Highlights:*\n`;
+      for (const h of reviewResult.highlights.slice(0, 3)) {
+        cardText += `• ${h}\n`;
+      }
+    }
+
+    if (reviewResult.inlineComments && reviewResult.inlineComments.length > 0) {
+      cardText += `\n🔍 *Issues & Recommendations (${reviewResult.inlineComments.length}):*\n`;
+      for (const c of reviewResult.inlineComments.slice(0, 4)) {
+        const icon = c.severity === 'BLOCKER' ? '🛑' : (c.severity === 'WARNING' ? '⚠️' : '💡');
+        cardText += `• ${icon} \`${c.filePath}:${c.line}\` [${c.category}] — ${c.comment}\n`;
+      }
+    }
+
+    const effectiveTicket = ticketKey || getTicketForThread(threadTs);
+    const jiraUrl = effectiveTicket ? getJiraTicketUrl(effectiveTicket) : null;
+
+    await postSlackMessage(
+      channel,
+      cardText.trim(),
+      threadTs,
+      {
+        jiraUrl,
+        githubUrl: prDetails.url,
+        enableAiReviewButton: false
+      }
+    );
+    console.log(`[SLACK] Completed AI Code Review for PR #${targetPrNumber} and posted card to thread ${threadTs}`);
+  } catch (err) {
+    console.error('[SLACK AI REVIEW ERROR]', err);
+    await postSlackMessage(
+      channel,
+      `❌ *AI Code Review failed for PR #${targetPrNumber}:* ${err.message}`,
+      threadTs
+    );
+  }
+}
+
 export async function initSlack() {
   if (slackApp) return slackApp;
 
@@ -196,6 +312,17 @@ export async function initSlack() {
     }
   });
 
+  // Interactive Button Handler: Trigger Gemini AI Code Review
+  slackApp.action('trigger_ai_review', async ({ ack, body }) => {
+    await ack();
+    const prNumber = body.actions?.[0]?.value;
+    const channel = body.channel?.id;
+    const threadTs = body.message?.thread_ts || body.message?.ts;
+    const user = body.user?.id || body.user?.username;
+    console.log(`[SLACK] User clicked 'Run AI Review' for PR #${prNumber} in thread ${threadTs}`);
+    await executeSlackAiReview({ channel, threadTs, prNumber, user });
+  });
+
   // Deduplicate processed messages to prevent duplicate replies across message & app_mention events
   const handledMessages = new Set();
 
@@ -218,7 +345,22 @@ export async function initSlack() {
       return;
     }
 
-    // 3. Otherwise, this is a developer asking a question about progress or status in the thread!
+    // 3. Check if user is asking for an AI code review
+    const reviewCmdMatch = text.match(/\b(review\s+pr\s*#?(\d+)|ai\s+review|gemini\s+review|run\s+ai\s+review|run\s+code\s+review|review\s+code|code\s+review)\b/i);
+    if (reviewCmdMatch) {
+      const explicitPr = text.match(/\bpr\s*#?(\d+)\b/i)?.[1] || reviewCmdMatch[2];
+      console.log(`[SLACK] Received AI review command in thread ${threadTs}: "${text}" (PR: ${explicitPr || 'auto'})`);
+      await executeSlackAiReview({
+        channel,
+        threadTs,
+        prNumber: explicitPr,
+        ticketKey: getTicketForThread(threadTs),
+        user
+      });
+      return;
+    }
+
+    // 4. Otherwise, this is a developer asking a question about progress or status in the thread!
     console.log(`[SLACK] Received user question in thread ${threadTs} from ${user || 'user'}: "${text}"`);
 
     let ticketKey = getTicketForThread(threadTs);
@@ -423,6 +565,23 @@ export async function postSlackMessage(channel, text, threadTs = null, buttonOpt
       url: buttonOptions.githubUrl,
       action_id: 'btn_open_github'
     });
+
+    if (buttonOptions?.enableAiReviewButton !== false) {
+      const prNumMatch = buttonOptions.githubUrl.match(/\/pull\/(\d+)/);
+      const prNum = prNumMatch ? prNumMatch[1] : '';
+      if (prNum) {
+        buttons.push({
+          type: 'button',
+          text: {
+            type: 'plain_text',
+            text: '🤖 Run AI Review',
+            emoji: true
+          },
+          action_id: 'trigger_ai_review',
+          value: prNum
+        });
+      }
+    }
   }
 
   if (buttons.length > 0) {

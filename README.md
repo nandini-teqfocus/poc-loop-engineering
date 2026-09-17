@@ -304,6 +304,14 @@ npm run test:ai-review
 node scripts/run-ai-code-review.js --pr 6
 ```
 
+### Triggering Directly from Slack:
+- **Interactive Button:** Click the **`[ 🤖 Run AI Review ]`** button attached to any Slack card with a PR link.
+- **Natural Language in Thread:** Mention or type in any ticket thread:
+  - `review PR 6`
+  - `run AI review`
+  - `review code`
+  The bot will run the Gemini review, post findings back to the Slack thread, and submit review comments on GitHub.
+
 ---
 
 ## 🤖 GitHub Actions PR Agent & Configurable Switch
