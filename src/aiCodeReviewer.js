@@ -114,33 +114,50 @@ ${diff}
 
 Analyze the code diff strictly for code quality, bugs, security, performance, maintainability, and best practices. Return your analysis as a valid JSON object.`;
 
+  const candidateModels = [
+    model,
+    'gemini-3.5-flash',
+    'gemini-3.6-flash'
+  ].filter(Boolean);
+  const uniqueModels = [...new Set(candidateModels)];
+
   try {
     let response = null;
     let lastError = null;
-    const maxRetries = 3;
+    const maxRetriesPerModel = 3;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        response = await ai.models.generateContent({
-          model,
-          contents: userPrompt,
-          config: {
-            systemInstruction: CODE_REVIEW_SYSTEM_PROMPT,
-            temperature: 0.1,
-            responseMimeType: 'application/json'
+    modelLoop:
+    for (let mIdx = 0; mIdx < uniqueModels.length; mIdx++) {
+      const currentModel = uniqueModels[mIdx];
+      for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
+        try {
+          response = await ai.models.generateContent({
+            model: currentModel,
+            contents: userPrompt,
+            config: {
+              systemInstruction: CODE_REVIEW_SYSTEM_PROMPT,
+              temperature: 0.1,
+              responseMimeType: 'application/json'
+            }
+          });
+          if (response) break modelLoop;
+        } catch (callErr) {
+          lastError = callErr;
+          const isTransient = callErr.status === 503 || callErr.status === 429 || /high demand|temporar/i.test(callErr.message);
+          if (isTransient && attempt < maxRetriesPerModel) {
+            const delayMs = attempt * 2000;
+            console.warn(`[AI CODE REVIEWER] Transient error on ${currentModel} (${callErr.status || '503'}), retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxRetriesPerModel})...`);
+            await new Promise((r) => setTimeout(r, delayMs));
+            continue;
           }
-        });
-        if (response) break;
-      } catch (callErr) {
-        lastError = callErr;
-        const isTransient = callErr.status === 503 || callErr.status === 429 || /high demand|temporar/i.test(callErr.message);
-        if (isTransient && attempt < maxRetries) {
-          const delayMs = attempt * 2000;
-          console.warn(`[AI CODE REVIEWER] Transient Gemini error (${callErr.status || '503'}), retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxRetries})...`);
-          await new Promise((r) => setTimeout(r, delayMs));
-          continue;
+          if (isTransient && mIdx < uniqueModels.length - 1) {
+            console.warn(`[AI CODE REVIEWER] Model ${currentModel} experiencing high demand (503). Switching to fallback model ${uniqueModels[mIdx + 1]}...`);
+            break; // Break inner loop to try next model
+          }
+          if (!isTransient) {
+            throw callErr;
+          }
         }
-        throw callErr;
       }
     }
 
