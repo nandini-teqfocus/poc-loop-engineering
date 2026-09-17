@@ -25,9 +25,10 @@ Append-only ledger of completed tickets. Each entry contains the ticket key, dat
 
 - **Ticket**: SCRUM-13
   - **Date**: 2026-09-17
-  - **Summary**: Create custom field External_Contract_Id__c (Text(50), External ID) on Opportunity object.
+  - **Summary**: Create custom field External_Contract_Id__c (Text(50), External ID) on Opportunity object. Address PR review iteration 1 comments for aiCodeReviewer multi-model fallback error handling.
   - **Artifacts**:
     - `force-app/main/default/objects/Opportunity/fields/External_Contract_Id__c.field-meta.xml`
+    - `src/aiCodeReviewer.js`
   - **PR**: https://github.com/nandini-teqfocus/poc-loop-engineering/pull/7
 
 

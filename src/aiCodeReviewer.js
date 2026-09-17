@@ -171,8 +171,8 @@ Analyze the code diff strictly for code quality, bugs, security, performance, ma
       }
     }
 
-    if (!response && lastError) {
-      throw lastError;
+    if (!response) {
+      throw lastError || new Error('All candidate models failed to generate content.');
     }
 
     const responseText = response.text?.trim() || '';
