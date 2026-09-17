@@ -190,7 +190,7 @@ export async function executeSlackAiReview({ channel, threadTs, prNumber = null,
     return;
   }
 
-  const userMention = user ? `<@${user}>` : 'team member';
+  const userMention = user ? (user.startsWith('U') || user.startsWith('W') ? `<@${user}>` : `*${user}*`) : 'team member';
   await postSlackMessage(
     channel,
     `🤖 *Gemini AI Code Review Triggered* for PR #${targetPrNumber} by ${userMention}!\n_Analyzing changed files & diff with Gemini 3.6 Flash..._`,
