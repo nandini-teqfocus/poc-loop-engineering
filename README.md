@@ -278,6 +278,31 @@ npm run test:connections
 | `JIRA_USER_EMAIL` | JIRA user email address | Yes | `developer@domain.com` |
 | `JIRA_API_TOKEN` | JIRA Cloud REST API token | Yes | `ATATT3...` |
 | `ENABLE_PR_REVIEW_AGENT` | Master switch to enable/disable PR Review Agent | No (defaults to `true`) | `true` or `false` |
+| `GEMINI_API_KEY` | Google Gemini API Key for AI Code Review Agent | Yes (for AI Review) | `AIzaSy...` |
+| `GEMINI_MODEL` | Gemini model to use for code review | No (defaults to `gemini-2.5-flash`) | `gemini-2.5-flash` |
+
+---
+
+## 🤖 Gemini AI Code Review Agent (Google Gen AI SDK)
+
+The repository features a dedicated, zero-Jira **AI PR Code Review Agent** powered by the **Google Gen AI SDK (`@google/genai`)** and **Gemini 2.5 Flash**:
+
+### Key Highlights:
+- **Strictly Code-Focused:** Ignores Jira tickets, user stories, acceptance criteria, and business feasibility. Focuses 100% on **Code Quality, Bugs, Security, Performance, and Maintainability**.
+- **Review Scope:** Evaluates **only changed lines & files** in the PR diff, filtering out non-code assets (lockfiles, documentation, build outputs).
+- **Dual-Tier PR Delivery:**
+  1. **Top-Level Review Summary:** Posts an executive summary with score (1-10), verdict badge (`APPROVED`, `CHANGES_REQUESTED`, `COMMENT`), security advisories, and code highlights.
+  2. **Line-by-Line Inline Comments:** Attaches actionable comments directly to specific diff lines, including GitHub Markdown suggested code fixes (````suggestion ... ````).
+- **Workflow Automation:** Runs in GitHub Actions (`.github/workflows/pr-code-review.yml`) on PR events (`opened`, `synchronize`, `reopened`), or on demand via `workflow_dispatch`.
+
+### Running Locally:
+```bash
+# Run local test suite against sample Apex code
+npm run test:ai-review
+
+# Run against a specific GitHub Pull Request
+node scripts/run-ai-code-review.js --pr 6
+```
 
 ---
 

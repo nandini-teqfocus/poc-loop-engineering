@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node orchestrator.js",
     "test": "node scripts/test-connections.js",
-    "test:connections": "node scripts/test-connections.js"
+    "test:connections": "node scripts/test-connections.js",
+    "test:ai-review": "node scripts/test-ai-review.js"
   },
   "repository": {
     "type": "git",
@@ -29,6 +30,7 @@
   },
   "homepage": "https://github.com/nandini-teqfocus/poc-loop-engineering#readme",
   "dependencies": {
+    "@google/genai": "^2.23.0",
     "@slack/bolt": "^5.1.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1"
