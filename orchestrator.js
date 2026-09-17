@@ -12,6 +12,8 @@ import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2Fix
 import { updateTicketState, setActiveTicketKey } from './src/statusResponder.js';
 import { isPrReviewAgentEnabled, submitPrReview, auditPullRequest } from './src/prReviewer.js';
 import { getSwitchState, toggleSwitch, setSwitchState, isGitHubActionActive, isLocalAgentActive } from './src/switchManager.js';
+import { reviewPullRequestDiff } from './src/aiCodeReviewer.js';
+import { getPullRequestDetails, getPullRequestDiff, submitReviewSummary } from './src/githubPrClient.js';
 
 const app = express();
 app.use(express.json());
@@ -498,27 +500,105 @@ export async function runPrReviewWorkflow({ ticketKey, summary, description, prU
       });
     }
 
-    // 2. Spawn Agent 4 (PR Reviewer)
-    const reviewPrompt = buildAgent4ReviewPrompt({
-      ticketKey,
-      summary,
-      description,
-      prUrl: effectivePrUrl,
-      prNumber,
-      branchName: effectiveBranch,
-      iteration
-    });
+    // 2. Perform Code Review (Gemini 3.6 Flash primary, legacy agent fallback)
+    let outcome = null;
+    let geminiReview = null;
 
-    const reviewResult = await runAgent(reviewPrompt, false);
-    const outcome = parseReviewResult(reviewResult.output, ticketKey);
+    if (process.env.GEMINI_API_KEY && prNumber) {
+      console.log(`[ORCHESTRATOR] 🤖 Executing Gemini 3.6 Flash Code Review for PR #${prNumber}...`);
+      try {
+        const prDetails = getPullRequestDetails(prNumber);
+        const diff = getPullRequestDiff(prNumber);
+
+        if (!diff || diff.trim().length === 0) {
+          console.log(`[ORCHESTRATOR] PR #${prNumber} has no reviewable source code diff. Auto-approving.`);
+          outcome = { approved: true, summary: 'No reviewable code changes detected.' };
+        } else {
+          geminiReview = await reviewPullRequestDiff({
+            diff,
+            changedFiles: prDetails.reviewableFiles,
+            prTitle: prDetails.title || summary,
+            branchName: effectiveBranch
+          });
+
+          // Write audit report file
+          const reviewReportPath = path.join(process.cwd(), 'agent-context', 'tickets', ticketKey, 'pr-review.md');
+          const reportDir = path.dirname(reviewReportPath);
+          if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir, { recursive: true });
+
+          let reportMd = `# Gemini AI Code Review: ${ticketKey} (Iteration ${iteration})\n\n` +
+            `- **PR**: #${prNumber}\n` +
+            `- **Verdict**: ${geminiReview.verdict}\n` +
+            `- **Overall Score**: ${geminiReview.overallScore} / 10\n` +
+            `- **Summary**: ${geminiReview.summary}\n\n`;
+
+          if (geminiReview.highlights?.length > 0) {
+            reportMd += `## Highlights\n${geminiReview.highlights.map(h => `- ${h}`).join('\n')}\n\n`;
+          }
+
+          if (geminiReview.securityAdvisories?.length > 0) {
+            reportMd += `## Security Advisories\n${geminiReview.securityAdvisories.map(s => `- **[${s.severity}] ${s.title}**: ${s.description} (${s.cweOrOwasp || 'N/A'})`).join('\n')}\n\n`;
+          }
+
+          if (geminiReview.inlineComments?.length > 0) {
+            reportMd += `## Issues & Recommendations\n${geminiReview.inlineComments.map(c => `- **[${c.severity}] \`${c.filePath}:${c.line}\`** [${c.category}]: ${c.comment}${c.suggestedFix ? `\n  - *Suggested Fix:*\n\`\`\`\n${c.suggestedFix}\n\`\`\`` : ''}`).join('\n')}\n\n`;
+          }
+
+          reportMd += `\nREVIEW_RESULT: ${geminiReview.verdict}\n`;
+
+          const commentsList = (geminiReview.inlineComments || []).map(c => `- [${c.severity} | ${c.category}] ${c.filePath}:${c.line} — ${c.comment}${c.suggestedFix ? ` (Fix: ${c.suggestedFix})` : ''}`).join('\n');
+          const securityList = (geminiReview.securityAdvisories || []).map(s => `- [SECURITY ${s.severity}] ${s.title}: ${s.description}`).join('\n');
+          const combinedIssues = [securityList, commentsList].filter(Boolean).join('\n') || geminiReview.summary;
+
+          if (geminiReview.verdict !== 'APPROVED') {
+            reportMd += `REVIEW_COMMENTS:\n${combinedIssues}\n`;
+          }
+
+          fs.writeFileSync(reviewReportPath, reportMd, 'utf8');
+
+          // Submit review findings directly to GitHub PR
+          try {
+            submitReviewSummary(prNumber, geminiReview, prDetails);
+          } catch (ghErr) {
+            console.warn('[ORCHESTRATOR] GitHub review submit note:', ghErr.message);
+          }
+
+          outcome = {
+            approved: geminiReview.verdict === 'APPROVED',
+            summary: geminiReview.summary,
+            reviewComments: combinedIssues,
+            geminiReview
+          };
+        }
+      } catch (geminiErr) {
+        console.warn(`[ORCHESTRATOR] Gemini AI Code Review encountered error: ${geminiErr.message}. Falling back to prompt runner...`);
+      }
+    }
+
+    if (!outcome) {
+      // Fallback: Legacy Agent 4 review prompt
+      const reviewPrompt = buildAgent4ReviewPrompt({
+        ticketKey,
+        summary,
+        description,
+        prUrl: effectivePrUrl,
+        prNumber,
+        branchName: effectiveBranch,
+        iteration
+      });
+
+      const reviewResult = await runAgent(reviewPrompt, false);
+      outcome = parseReviewResult(reviewResult.output, ticketKey);
+    }
+
     console.log(`[ORCHESTRATOR] PR Review Iteration ${iteration} verdict: ${outcome.approved ? 'APPROVED' : 'CHANGES_REQUESTED'}`);
 
     if (outcome.approved) {
       reviewPassed = true;
 
-      // 3. Approve the PR on GitHub
-      console.log(`[ORCHESTRATOR] Submitting approval on GitHub PR #${prNumber}...`);
-      if (prNumber) {
+      // 3. Approve the PR on GitHub if not already submitted via Gemini
+      if (prNumber && !outcome.geminiReview) {
+        console.log(`[ORCHESTRATOR] Submitting approval on GitHub PR #${prNumber}...`);
         submitPrReview(prNumber, {
           action: 'APPROVE',
           body: `All acceptance criteria and technical requirements for **${ticketKey}** verified successfully.\n\n### Review Summary\n${outcome.summary}`
@@ -531,22 +611,25 @@ export async function runPrReviewWorkflow({ ticketKey, summary, description, prU
           phaseNumber: 5,
           phaseName: 'PR Review & Code Quality (Agent 4)',
           status: 'Completed',
-          summary: `Pull Request verified and approved. All requirements and acceptance criteria for *${ticketKey}* are satisfied. Review audit: \`agent-context/tickets/${ticketKey}/pr-review.md\`.`,
+          summary: `Pull Request verified and approved. ${outcome.geminiReview ? `Gemini Score: ${outcome.geminiReview.overallScore}/10. ` : ''}Review audit: \`agent-context/tickets/${ticketKey}/pr-review.md\`.`,
           nextPhase: 'Phase 6: JIRA Finalization & QA Testing',
           jiraUrl,
           githubUrl: effectivePrUrl,
           allowDuplicate: true
         });
 
+        const scoreLine = outcome.geminiReview ? `• *Code Quality Score:* \`${outcome.geminiReview.overallScore} / 10\`\n` : '';
+        const highlightsLine = outcome.geminiReview?.highlights?.length ? `• *Highlights:*\n${outcome.geminiReview.highlights.slice(0, 2).map(h => `  - ${h}`).join('\n')}\n` : '';
+
         await postSlackMessage(
           CHANNEL_ID,
           `✅ *GitHub PR #${prNumber || 'Current'} Approved by Review Agent!*
 • *Ticket:* *${ticketKey}*
 • *Verdict:* Approved
-• *Summary:* ${outcome.summary}
-• *Next Step:* Proceeding to JIRA Finalization & QA Testing...`,
+${scoreLine}• *Summary:* ${outcome.summary}
+${highlightsLine}• *Next Step:* Proceeding to JIRA Finalization & QA Testing...`,
           threadTs,
-          { jiraUrl, githubUrl: effectivePrUrl }
+          { jiraUrl, githubUrl: effectivePrUrl, enableAiReviewButton: false }
         );
       }
 
@@ -556,8 +639,8 @@ export async function runPrReviewWorkflow({ ticketKey, summary, description, prU
       // Reviewer found missing requirements or bugs!
       console.log(`[ORCHESTRATOR] PR Reviewer requested changes: ${outcome.reviewComments}`);
 
-      // 1. Add clear comment on GitHub PR explaining what needs to be fixed
-      if (prNumber) {
+      // 1. Add clear comment on GitHub PR explaining what needs to be fixed (if not already posted by Gemini)
+      if (prNumber && !outcome.geminiReview) {
         console.log(`[ORCHESTRATOR] Adding review comment to GitHub PR #${prNumber}...`);
         submitPrReview(prNumber, {
           action: 'REQUEST_CHANGES',
@@ -578,14 +661,15 @@ export async function runPrReviewWorkflow({ ticketKey, summary, description, prU
           allowDuplicate: true
         });
 
+        const scoreLine = outcome.geminiReview ? `• *Code Quality Score:* \`${outcome.geminiReview.overallScore} / 10\`\n` : '';
         await postSlackMessage(
           CHANNEL_ID,
           `🔍 *PR Review Changes Requested for ${ticketKey} (PR #${prNumber || 'Current'})*
-• *Issues to Fix:*
+${scoreLine}• *Issues to Fix:*
 >${outcome.reviewComments.replace(/\n/g, '\n>')}
 • *Action:* Spawning Agent 2 (Builder) to resolve review comments and update PR...`,
           threadTs,
-          { jiraUrl, githubUrl: effectivePrUrl }
+          { jiraUrl, githubUrl: effectivePrUrl, enableAiReviewButton: false }
         );
       }
 
