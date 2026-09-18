@@ -9,7 +9,8 @@
     "test:connections": "node scripts/test-connections.js",
     "test:ai-review": "node scripts/test-ai-review.js",
     "test:slack-review": "node scripts/test-slack-live-review.js",
-    "test:auto-fix": "node scripts/test-auto-fix.js"
+    "test:auto-fix": "node scripts/test-auto-fix.js",
+    "test:teams": "node scripts/test-teams-webhook.js"
   },
   "repository": {
     "type": "git",
@@ -35,6 +36,7 @@
     "@google/genai": "^2.23.0",
     "@slack/bolt": "^5.1.0",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "nodemailer": "^10.0.10"
   }
 }

@@ -6,7 +6,23 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { getJiraIssue, addJiraComment, transitionJiraIssue, extractTextFromAdf, getJiraTicketUrl, searchJiraIssues } from './src/jira.js';
-import { initSlack, postSlackMessage, askSlackQuestion, notifyPhase, notifyStageChange, registerTicketThread, getTicketThread, getPrUrlForTicket, postSlackSwitchControl } from './src/slack.js';
+import {
+  initSlack,
+  postSlackMessage,
+  askSlackQuestion,
+  notifyPhase as notifySlackPhase,
+  notifyStageChange as notifySlackStageChange,
+  registerTicketThread,
+  getTicketThread,
+  getPrUrlForTicket,
+  postSlackSwitchControl
+} from './src/slack.js';
+import {
+  isTeamsConfigured,
+  postTeamsMessage,
+  notifyTeamsPhase,
+  notifyTeamsStageChange
+} from './src/teams.js';
 import { runAgent, parseNeedsInput, parseTestResult, parseReviewResult } from './src/agentRunner.js';
 import { buildAgent1Prompt, buildAgent2Prompt, buildAgent3Prompt, buildAgent2FixPrompt, buildAgent4ReviewPrompt, buildAgent2PrReviewFixPrompt } from './src/prompts.js';
 import { updateTicketState, setActiveTicketKey } from './src/statusResponder.js';
@@ -20,6 +36,19 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const CHANNEL_ID = process.env.SLACK_CHANNEL_ID;
+
+// Dual-dispatch notification wrappers: sends to Slack and Microsoft Teams in parallel
+async function notifyPhase(channel, threadTs, options) {
+  const pSlack = (channel && threadTs) ? notifySlackPhase(channel, threadTs, options) : Promise.resolve(null);
+  const pTeams = notifyTeamsPhase(options).catch(err => console.warn('[TEAMS WARN]', err.message));
+  return await pSlack;
+}
+
+async function notifyStageChange(channel, options) {
+  const pSlack = channel ? notifySlackStageChange(channel, options) : Promise.resolve(null);
+  const pTeams = notifyTeamsStageChange(options).catch(err => console.warn('[TEAMS WARN]', err.message));
+  return await pSlack;
+}
 
 let isProcessing = false;
 const handledStageTransitions = new Set();
@@ -94,6 +123,10 @@ export async function executeLoopForTicket(ticketKey) {
           );
         }
       }
+      await postTeamsMessage(
+        `🚀 *Loop Engineering Triggered*: Starting delivery for *${ticketKey}*\n*Summary:* ${summary}`,
+        { jiraUrl, title: `Loop Engineering Triggered: ${ticketKey}` }
+      ).catch(() => {});
 
       // Ensure ticket is in 'In Progress' state before proceeding
       if (currentStatus === 'to do' || currentStatus === 'todo') {
@@ -419,6 +452,10 @@ export async function executeLoopForTicket(ticketKey) {
         { jiraUrl }
       );
     }
+    await postTeamsMessage(
+      `❌ *Error during delivery for ${ticketKey}:* ${err.message}`,
+      { jiraUrl, title: `Delivery Error: ${ticketKey}` }
+    ).catch(() => {});
   } finally {
     isProcessing = false;
     setActiveTicketKey(null);
@@ -758,6 +795,11 @@ export async function runPrReviewForTicket(ticketKey) {
       registerTicketThread(ticketKey, threadTs);
     }
 
+    await postTeamsMessage(
+      `🔍 *PR Review Triggered*: Inspecting pull request for *${ticketKey}*\n*Summary:* ${summary}`,
+      { jiraUrl, githubUrl: prUrl, title: `PR Review Triggered: ${ticketKey}` }
+    ).catch(() => {});
+
     await runPrReviewWorkflow({
       ticketKey,
       summary,
@@ -777,6 +819,10 @@ export async function runPrReviewForTicket(ticketKey) {
         { jiraUrl: getJiraTicketUrl(ticketKey) }
       );
     }
+    await postTeamsMessage(
+      `❌ *Error during PR Review for ${ticketKey}:* ${err.message}`,
+      { jiraUrl: getJiraTicketUrl(ticketKey), title: `PR Review Error: ${ticketKey}` }
+    ).catch(() => {});
   } finally {
     isProcessing = false;
   }
@@ -877,6 +923,15 @@ export async function runTesterWorkflow({ ticketKey, summary, branchName, prUrl,
           threadTs,
           { jiraUrl, githubUrl: effectivePrUrl }
         );
+
+        await postTeamsMessage(
+          `🏆 *Autonomous Loop & QA Testing Successfully Completed for ${ticketKey}!*
+• *Final Stage:* *Done*
+• *Verification:* All acceptance criteria in \`plan.md\` verified
+• *Target Org:* Deployed & verified in \`time-sheet\`
+• *Pull Request:* ${effectivePrUrl || effectiveBranch}`,
+          { jiraUrl, githubUrl: effectivePrUrl, title: `Autonomous Loop Completed: ${ticketKey}` }
+        ).catch(() => {});
       }
 
       // 5. Add passing comment to JIRA
@@ -1232,6 +1287,11 @@ export async function handlePrMerge({ ticketKey, prUrl, prNumber }) {
         threadTs,
         { jiraUrl, githubUrl: effectivePrUrl }
       );
+
+      await postTeamsMessage(
+        `🔀 *Pull Request Merged into \`main\`!*\n• *Ticket:* *${ticketKey}*\n• *Status:* Moved to *Done*\n• *Pull Request:* ${effectivePrUrl || 'Merged into main'}`,
+        { jiraUrl, githubUrl: effectivePrUrl, title: `PR Merged: ${ticketKey}` }
+      ).catch(() => {});
     }
 
     console.log(`[PR MERGE] Successfully handled PR merge for ${ticketKey}.\n`);

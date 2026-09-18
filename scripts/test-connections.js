@@ -99,7 +99,30 @@ async function testSlack() {
   }
 }
 
+// 4. Test Microsoft Teams connection (Optional)
+async function testTeams() {
+  try {
+    const { isTeamsConfigured, postTeamsMessage } = await import('../src/teams.js');
+    if (!isTeamsConfigured()) {
+      console.log('\n[TEAMS OPTIONAL] Microsoft Teams notification channel is not configured (skipping).');
+      return;
+    }
+
+    const ok = await postTeamsMessage(
+      '🚀 *POC Loop Engineering*: Teams integration verified and ready!',
+      { title: 'Connection Verification' }
+    );
+    if (ok) {
+      console.log('[TEAMS OK] Successfully delivered test notification to Microsoft Teams channel.');
+    } else {
+      console.warn('[TEAMS WARN] Failed to send test notification to Teams channel.');
+    }
+  } catch (err) {
+    console.error(`[TEAMS ERROR] ${err.message}`);
+  }
+}
 
 await testJira();
 await testSlack();
+await testTeams();
 process.exit(0);

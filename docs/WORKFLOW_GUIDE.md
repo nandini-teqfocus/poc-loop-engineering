@@ -172,3 +172,23 @@ The PR Review Agent includes a configuration switch: `ENABLE_PR_REVIEW_AGENT` (d
   - **Local Loop:** Phase 5 is bypassed cleanly. The orchestrator updates the Slack thread and immediately moves to Phase 6 (JIRA Finalization) and Phase 7 (QA Validation).
   - **GitHub Actions:** The workflow detects the switch, logs a skipped notice to the step summary, and terminates cleanly with exit code `0`.
 
+---
+
+## 7. Microsoft Teams Dual-Broadcast Observability
+
+### 7.1 Lifecycle Event Dispatch
+Whenever a stage or phase change occurs, the orchestrator triggers both Slack and Microsoft Teams in parallel:
+- **Phase Started / Completed / Failed**: Dispatched via `notifyTeamsPhase(...)` in `src/teams.js`.
+- **Ticket Stage Transitions**: Dispatched via `notifyTeamsStageChange(...)` (e.g. `To Do` ➔ `In Progress` ➔ `In Review` ➔ `Done`).
+
+### 7.2 Channel Delivery Mechanics
+- **Primary: Teams Channel Email via SMTP**: Rich HTML cards are transmitted to the channel email (`@in.teams.ms`) via Nodemailer SMTP. This method requires zero Azure App registrations or tenant-admin consent.
+- **Secondary: Webhook / Adaptive Cards**: Formatted Adaptive Card 1.4 JSON payloads sent via HTTP POST to Power Automate webhook endpoints when configured.
+
+### 7.3 Card Content Breakdown
+Every Teams card features:
+1. **Header Banner**: Color-coded to reflect phase/stage status.
+2. **Key Metadata**: JIRA Ticket key, target Salesforce org (`time-sheet`), timestamp.
+3. **Structured Context Summary**: Formatted bullet points for ticket scope, acceptance criteria, components modified, and coverage metrics.
+4. **Action Buttons**: Direct deep links to the **[🎯 JIRA Ticket]** and **[🐙 GitHub PR]**.
+

@@ -1,4 +1,4 @@
-﻿# POC Loop Engineering — Comprehensive Architecture, Implementation & Verification Report
+# POC Loop Engineering — Comprehensive Architecture, Implementation & Verification Report
 
 **Project**: POC Loop Engineering (Autonomous Agentic Delivery Pipeline)  
 **Target Repository**: `nandini-teqfocus/poc-loop-engineering`  
@@ -125,6 +125,18 @@ The end-to-end architecture connects cloud services, local orchestration, and au
   - Supports asynchronous thread reply resolution via in-memory promises (`Map<threadTs, resolve>`).
   - Enhanced in `SCRUM-2` branch with `app_mention` listener, ensuring replies resolve even when restricted Slack workspace scopes omit `channels:history`.
 
+### 3.3.1 Microsoft Teams Channel Webhook Integration (`src/teams.js`)
+- **Status**: Operational & Verified.
+- **Architectural Scope**:
+  - **Channel Webhook Only**: Posts structured Adaptive Cards 1.4 into a designated Microsoft Teams channel for all major pipeline milestones (Loop start, Phase progress, JIRA stage changes, PR review results, QA completions, and errors).
+  - **Two-Way Chat Analysis & Decision**:
+    - *Evaluation*: Two-way interactive Teams chat requires Azure Bot Framework registration, Microsoft Entra ID (Azure AD) App Registration, Tenant Administrator consent in Microsoft 365 / Teams Admin Center (allowing custom app sideloading), and a publicly reachable HTTPS endpoint with TLS (Teams has no native outbound-only WebSocket Socket Mode equivalent to Slack Bolt).
+    - *Decision*: Due to the mandatory requirement for Tenant Global/Sys Admin permissions and Azure cloud infrastructure, two-way interactive chat was dropped in favor of zero-friction Teams Channel Webhook notifications.
+  - **Key Capabilities**:
+    - Adaptive Card 1.4 envelope with formatted containers, status color highlights, and action buttons (`Action.OpenUrl`) linking directly to JIRA tickets and GitHub Pull Requests.
+    - Graceful degradation: If `TEAMS_WEBHOOK_URL` is omitted, notifications bypass cleanly without errors or performance penalty.
+    - Slack isolation: Slack Socket Mode and Bolt functionality remain completely untouched and independent.
+
 ### 3.4 Agent Runner (`src/agentRunner.js`)
 - **Status**: Operational & Verified.
 - **Strengths**:
@@ -248,27 +260,69 @@ Despite the overall success of the POC, several technical and architectural gaps
 
 ---
 
-## 7. Recommended Next Steps
+## 7. Multi-Channel Observability: Microsoft Teams Integration
 
-1. **Reconcile Git Branches & Memory on `main`**:
-   - Merge PR #1 and PR #2 into `main`.
-   - Ensure `agent-context/MEMORY.md` on `main` accurately combines the Account object documentation (`Industry_Segment__c`, `Renewal_Risk_Score__c`, `Customer_Tier__c`, `Primary_Competitor_Required_High_Risk`) and the Contact object documentation (`Blood_Group__c`, `Allergies__c`, `Emergency_Contact_Name__c`, etc.).
-   - Consolidate `agent-context/CHANGELOG.md` to list all three tickets in chronological order.
+### 7.1 Objective & Requirements
+To provide cross-functional visibility into autonomous agent runs without requiring stakeholders to switch collaboration platforms, the pipeline implements an enterprise-grade Microsoft Teams observability layer running in parallel with Slack.
 
-2. **Harden `orchestrator.js` Git Operations**:
-   - Update `orchestrator.js` to ensure the local repository updates from remote before branching:
-     ```javascript
-     execSync('git checkout main && git pull origin main', { stdio: 'inherit' });
-     ```
+### 7.2 Architectural Trade-Off Analysis: Two-Way Chat vs. Outbound Notifications
+During initial architectural analysis, two potential integration patterns were evaluated:
+1. **Full Two-Way Chat Bot (Azure Bot Service / Microsoft Graph):**
+   - *Requirements:* Azure Subscription, Microsoft Entra ID App registration, Microsoft 365 Tenant Admin consent for app sideloading, and public endpoint registration.
+   - *Constraint:* In enterprise M365 tenants (`@teqfocus.com`), developers lack Global/Application Administrator permissions to consent to custom multi-tenant bots.
+   - *Decision:* Two-way interactive chat is deferred until enterprise tenant admin approval is provisioned. Interactive approvals and HitL clarification remain anchored in Slack Bolt (Socket Mode).
+2. **Outbound Notification Engine (Channel Webhooks & Channel Email):**
+   - *Requirements:* Inbound HTTP webhook (Power Automate) or Channel Email address (`@in.teams.ms`).
+   - *Advantages:* Requires **zero M365 tenant-admin overhead**, zero external infrastructure costs, and zero security risk to corporate directories.
 
-3. **Persistent State Storage for Slack Q&A**:
-   - Save active clarification questions to a lightweight `agent-context/pending-questions.json` to allow process resumption across orchestrator restarts.
+### 7.3 Delivery Mechanics & Enterprise Policy Resolution
+Enterprise M365 tenants often enforce Data Loss Prevention (DLP) or tenant restrictions that prevent unauthenticated Power Automate incoming webhook triggers. To guarantee reliable delivery across all corporate environments:
+- **Primary Delivery (Channel Email via SMTP):**
+  - Teams native channels provide a unique inbound SMTP address (`<channel-id>.<tenant>.com@in.teams.ms`).
+  - [`src/teams.js`](src/teams.js) dispatches responsive HTML cards via secure SMTP (`nodemailer` over TLS on port 465/587) directly into the Teams channel conversation feed.
+  - Channel setting requirement: *"Anyone can send emails to this address"*.
+- **Secondary Delivery (Adaptive Cards 1.4 via Webhook):**
+  - Dispatches structured Adaptive Card JSON payloads when `TEAMS_WEBHOOK_URL` is populated.
+- **Fallback (Resend API):**
+  - Optional HTTPS REST fallback when `RESEND_API_KEY` is provided.
 
-4. **Prepare for UI & Experience Cloud Tickets**:
-   - Now that backend data models on `Account` and `Contact` are established, proceed to Ticket #3 / UI phase (e.g. Experience Cloud LWC profile components and portal record pages).
+### 7.4 Card UX & Information Architecture
+The Teams integration implements a dedicated HTML and Adaptive Card rendering engine:
+- **Status Badges:** Header banners colored according to lifecycle state (`#0078D4` for Started, `#8764B8` for In Progress, `#107C41` for Completed, `#D83B01` for Failed).
+- **Direct Deep Links:** Deep-link buttons navigating straight to the **JIRA Ticket** and **GitHub PR**.
+- **Detailed Context & Execution Summary:** Parses raw agent descriptions into structured key-value bullet points, monospace code snippets (`<code style="background: #EDEBE9;">`), quotation blocks, and target org context badges (`time-sheet`).
+
+### 7.5 Parallel Dual-Dispatch Integration
+In [`orchestrator.js`](orchestrator.js), phase lifecycle events (`notifyPhase`) and stage changes (`notifyStageChange`) execute dual asynchronous dispatches:
+```javascript
+await Promise.allSettled([
+  notifySlackPhase(...),
+  notifyTeamsPhase(...)
+]);
+```
+- **Non-Blocking:** If Teams email delivery encounters SMTP latency or transient rate-limiting, pipeline execution continues without delay.
+- **Fault-Tolerant:** Slack Socket Mode and Teams SMTP operate completely independently. Failure in one medium never impacts the other.
 
 ---
 
-## 8. Conclusion
+## 8. Recommended Next Steps
 
-The `poc-loop-engineering` pipeline successfully demonstrates that autonomous multi-agent loops can deliver incremental Salesforce features with high fidelity. The combination of JIRA webhooks, Slack Socket Mode clarification, Antigravity CLI orchestration, and persistent Git-tracked living memory solves the critical problem of agent context drift across sessions. The architecture is fully operational and ready for scaling to subsequent project epics.
+1. **Reconcile Git Branches & Memory on `main`**:
+   - Merge PR #1 and PR #2 into `main`.
+   - Ensure `agent-context/MEMORY.md` on `main` accurately combines Account and Contact object documentation.
+   - Consolidate `agent-context/CHANGELOG.md` to list all tickets chronologically.
+
+2. **Harden `orchestrator.js` Git Operations**:
+   - Update `orchestrator.js` to ensure the local repository updates from remote before branching.
+
+3. **Persistent State Storage for Slack Q&A**:
+   - Save active clarification questions to a lightweight `agent-context/pending-questions.json`.
+
+4. **Outlook Actionable Messages in Teams**:
+   - Embed Actionable Message JSON cards (`application/ld+json`) into the Teams email payloads to enable direct one-click approvals in Teams without requiring Azure Bot registrations.
+
+---
+
+## 9. Conclusion
+
+The `poc-loop-engineering` pipeline successfully establishes a closed-loop multi-agent autonomous delivery engine for Salesforce development, complemented by a resilient, enterprise-compliant dual-channel observability layer across Slack and Microsoft Teams. The design respects corporate security constraints, preserves developer context across sprints, and provides complete stakeholder visibility into every stage of the autonomous engineering lifecycle.

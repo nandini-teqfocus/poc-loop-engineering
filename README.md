@@ -6,6 +6,7 @@
 [![Salesforce CLI](https://img.shields.io/badge/Salesforce-SFDX%20v62.0-blue.svg)](https://developer.salesforce.com/tools/salesforcecli)
 [![Atlassian JIRA](https://img.shields.io/badge/Atlassian-JIRA%20Cloud-0052CC.svg)](https://www.atlassian.com/software/jira)
 [![Slack Bolt](https://img.shields.io/badge/Slack-Bolt%20Socket%20Mode-4A154B.svg)](https://slack.dev/bolt-js/)
+[![Microsoft Teams](https://img.shields.io/badge/Microsoft%20Teams-Channel%20Email%20%26%20Cards-6264A7.svg)](https://teams.microsoft.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -18,6 +19,7 @@
 - [The Multi-Agent Ecosystem](#-the-multi-agent-ecosystem)
 - [Persistent Living Memory](#-persistent-living-memory)
 - [Interactive Slack & JIRA Features](#-interactive-slack--jira-features)
+- [Microsoft Teams Observability & Cards](#-microsoft-teams-observability--cards)
 - [Project Directory Structure](#-project-directory-structure)
 - [Prerequisites](#-prerequisites)
 - [Installation & Setup](#-installation--setup)
@@ -60,6 +62,7 @@ Traditional AI coding assistants lack state across days, cannot resolve ambiguou
 - **🧠 Persistent Living Memory:** Stored inside Git (`agent-context/`), eliminating context degradation across sprints.
 - **🛡️ Quality Gate & Defect Loop:** Unapproved PRs are strictly blocked from advancing; QA failures cycle tickets back to `In Progress` for Builder resolution until all tests pass.
 - **🚀 Automated PR Merge Handling:** Merging the feature PR to `main` automatically finalizes the linked JIRA issue to `Done`.
+- **📢 Microsoft Teams Enterprise Channel Observability:** Parallel real-time notifications dispatched to Microsoft Teams with branded HTML/Adaptive Cards, color-coded phase banners, direct JIRA & GitHub action buttons, and structured "Context & Execution Summary" cards delivered via Channel Email / Webhook with zero M365 admin friction.
 
 ---
 
@@ -172,6 +175,34 @@ Developers can review any Pull Request on-demand directly from Slack:
 
 ---
 
+## 📢 Microsoft Teams Observability & Cards
+
+The pipeline includes an enterprise-grade Microsoft Teams observability engine ([`src/teams.js`](src/teams.js)) that runs alongside Slack via non-blocking dual-dispatch:
+
+### 1. Key Card Capabilities:
+- **Status Badges & Accent Banners:** Visually identifies execution state (`⏳ Started`, `🔄 In Progress`, `✅ Completed`, `🔍 In Review`, `❌ Failed`).
+- **One-Click Action Buttons:** Direct deep-link buttons pointing to the active **[🎯 JIRA Ticket]** and **[🐙 GitHub PR]**.
+- **📋 Detailed Context & Execution Summary:** Parses complex agent activity into an organized card section featuring:
+  - Bulleted key-value metrics (`• Ticket:`, `• Scope:`, `• Acceptance Criteria:`, `• Components Identified:`).
+  - Inline monospace tags for Salesforce metadata files (`TimesheetValidator.cls`, `force-app/...`).
+  - Target org context indicator (`time-sheet`).
+
+### 2. Dual Delivery Mechanisms (Zero Tenant-Admin Friction):
+Enterprise Microsoft 365 tenants frequently block unauthenticated Power Automate webhooks or restrict two-way Azure bot sideloading. To eliminate administrative hurdles, this integration supports two modes:
+1. **Option A: Teams Channel Email via Secure SMTP (Default & Enterprise-Friendly):**
+   - Directly routes rich HTML cards to the channel email address (e.g. `channel@in.teams.ms`) via standard SMTP (`nodemailer` + Gmail/SendGrid/SES).
+   - Requires **zero M365 tenant-admin privileges** or Azure App registrations.
+2. **Option B: Adaptive Cards 1.4 via Webhook:**
+   - Dispatches native Adaptive Card 1.4 payloads to Power Automate / Workflows HTTP triggers when `TEAMS_WEBHOOK_URL` is provided.
+
+### 3. Testing Teams Integration:
+```bash
+# Verify Teams detection, card compilation, and live delivery
+npm run test:teams
+```
+
+---
+
 ## 📂 Project Directory Structure
 
 ```
@@ -207,7 +238,8 @@ poc-loop-engineering/
 │
 ├── scripts/                  # Operational & diagnostic utilities
 │   ├── run-pr-review.js      # PR Review Agent runner (Local CLI & GitHub Actions)
-│   ├── test-connections.js   # Verify JIRA & Slack API connectivity
+│   ├── test-connections.js   # Verify JIRA, Slack & Teams connectivity
+│   ├── test-teams-webhook.js # Verify Microsoft Teams Webhook / Channel Email delivery
 │   └── deliver-scrum6.js     # Standalone ticket delivery execution script
 │
 └── src/                      # Orchestrator modules & integration services
@@ -219,7 +251,8 @@ poc-loop-engineering/
     ├── prompts.js            # Prompt templates for Agents 1, 2, 3, and 4
     ├── slack.js              # Slack Bolt app, Socket Mode, interactive cards & thread manager
     ├── statusResponder.js    # Thread query responder for live Slack status questions
-    └── switchManager.js      # Central state switch manager for GitHub Actions & local agents
+    ├── switchManager.js      # Central state switch manager for GitHub Actions & local agents
+    └── teams.js              # Microsoft Teams notification engine (Adaptive Cards & Channel Email)
 ```
 
 ---
@@ -287,6 +320,13 @@ npm run test:connections
 | `SLACK_SIGNING_SECRET` | Slack app signing secret | Yes | `3e9984fcaba0...` |
 | `SLACK_SOCKET_MODE` | Enable Bolt Socket Mode | Yes | `true` |
 | `SLACK_CHANNEL_ID` | Slack channel for progress updates | Yes | `C0C03V63H16` |
+| `TEAMS_WEBHOOK_URL` | Microsoft Teams incoming webhook / Workflow URL | No (Optional) | `https://prod-xx.westus.logic.azure.com/...` |
+| `TEAMS_CHANNEL_EMAIL` | Microsoft Teams channel email address (Zero-admin mode) | No (Optional) | `channel@in.teams.ms` |
+| `SMTP_HOST` | SMTP server host for Teams channel email dispatch | No (Required if using Teams email) | `smtp.gmail.com` |
+| `SMTP_PORT` | SMTP server port (465 SSL or 587 TLS) | No (defaults to 465) | `465` |
+| `SMTP_USER` | SMTP username / sender email | No (Required if using SMTP) | `developer@gmail.com` |
+| `SMTP_PASS` | SMTP application password | No (Required if using SMTP) | `xxxx xxxx xxxx xxxx` |
+| `RESEND_API_KEY` | Resend API key for fallback email dispatch | No (Optional) | `re_123456...` |
 | `JIRA_BASE_URL` | JIRA Cloud instance URL | Yes | `https://yourdomain.atlassian.net` |
 | `JIRA_USER_EMAIL` | JIRA user email address | Yes | `developer@domain.com` |
 | `JIRA_API_TOKEN` | JIRA Cloud REST API token | Yes | `ATATT3...` |
@@ -462,6 +502,16 @@ To inspect deployed metadata directly in the target org:
 ```bash
 sf sobject describe --sobject Account --target-org time-sheet
 sf sobject describe --sobject Contact --target-org time-sheet
+```
+
+### Verifying Multi-Channel Notifications (Slack & Teams)
+To test connectivity and card rendering across both communication channels:
+```bash
+# Test Slack & JIRA connections
+npm run test:connections
+
+# Test Microsoft Teams Webhook & Adaptive Card generation
+npm run test:teams
 ```
 
 ---
